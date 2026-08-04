@@ -1,0 +1,16 @@
+[project]
+name = "scheme-builder"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "pyside6>=6.11.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-qt>=4.5.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

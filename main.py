@@ -1,17 +1,8 @@
 import sys
 
-from PySide6.QtWidgets import QApplication, QLabel, QMainWindow
+from PySide6.QtWidgets import QApplication
 
-
-def create_main_window() -> QMainWindow:
-    window = QMainWindow()
-    window.setWindowTitle("Scheme Builder")
-
-    heading = QLabel("Редактор схем комплекса")
-    heading.setObjectName("editorHeading")
-    window.setCentralWidget(heading)
-
-    return window
+from scheme_builder.ui.main_window import create_main_window
 
 
 if __name__ == "__main__":

@@ -2,9 +2,16 @@ from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QDialog, QLabel, QMainWindow, QToolBar
+from PySide6.QtWidgets import (
+    QDialog,
+    QFileDialog,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QToolBar,
+)
 
-from scheme_builder.project import create_project
+from scheme_builder.project import InvalidProjectError, create_project, open_project
 from scheme_builder.ui.create_project_dialog import CreateProjectDialog
 
 DEFAULT_WINDOW_SIZE = QSize(1100, 700)
@@ -45,6 +52,13 @@ def create_main_window(projects_directory: Path | None = None) -> QMainWindow:
             empty_project_label,
         )
     )
+    open_project_action.triggered.connect(
+        lambda checked=False: _show_open_project_dialog(
+            window,
+            projects_directory,
+            empty_project_label,
+        )
+    )
     return window
 
 
@@ -59,3 +73,25 @@ def _show_create_project_dialog(
 
     project_path = create_project(projects_directory, dialog.project_name)
     project_label.setText(f"Открыт комплекс: {project_path.name}")
+
+
+def _show_open_project_dialog(
+    window: QMainWindow,
+    projects_directory: Path,
+    project_label: QLabel,
+) -> None:
+    selected_directory = QFileDialog.getExistingDirectory(
+        window,
+        "Открыть комплекс",
+        str(projects_directory),
+    )
+    if not selected_directory:
+        return
+
+    try:
+        project_data = open_project(Path(selected_directory))
+    except InvalidProjectError as error:
+        QMessageBox.warning(window, "Не удалось открыть комплекс", str(error))
+        return
+
+    project_label.setText(f"Открыт комплекс: {project_data['name']}")

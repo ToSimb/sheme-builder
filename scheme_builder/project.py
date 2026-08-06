@@ -10,15 +10,14 @@ def create_project(parent_directory: Path, name: str) -> Path:
     project_path = parent_directory / name
     project_path.mkdir(parents=True)
 
-    for directory_name in (
-        "metrics",
-        "templates",
-        "raw",
-        "mapping",
-        "proc",
-        "exports",
+    for relative_directory in (
+        "library/metrics",
+        "library/templates",
+        "agents",
+        "join",
+        "exports/agents",
     ):
-        (project_path / directory_name).mkdir()
+        (project_path / relative_directory).mkdir(parents=True)
 
     project_data = {
         "format_version": 1,

@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 
 from scheme_builder.project import InvalidProjectError, create_project, open_project
 from scheme_builder.ui.create_project_dialog import CreateProjectDialog
+from scheme_builder.ui.project_workspace import ProjectWorkspace
 
 DEFAULT_WINDOW_SIZE = QSize(1100, 700)
 MINIMUM_WINDOW_SIZE = QSize(800, 500)
@@ -49,14 +50,12 @@ def create_main_window(projects_directory: Path | None = None) -> QMainWindow:
         lambda checked=False: _show_create_project_dialog(
             window,
             projects_directory,
-            empty_project_label,
         )
     )
     open_project_action.triggered.connect(
         lambda checked=False: _show_open_project_dialog(
             window,
             projects_directory,
-            empty_project_label,
         )
     )
     return window
@@ -65,20 +64,18 @@ def create_main_window(projects_directory: Path | None = None) -> QMainWindow:
 def _show_create_project_dialog(
     window: QMainWindow,
     projects_directory: Path,
-    project_label: QLabel,
 ) -> None:
     dialog = CreateProjectDialog(projects_directory, window)
     if dialog.exec() != QDialog.DialogCode.Accepted:
         return
 
     project_path = create_project(projects_directory, dialog.project_name)
-    project_label.setText(f"Открыт комплекс: {project_path.name}")
+    _show_project_workspace(window, project_path, project_path.name)
 
 
 def _show_open_project_dialog(
     window: QMainWindow,
     projects_directory: Path,
-    project_label: QLabel,
 ) -> None:
     selected_directory = QFileDialog.getExistingDirectory(
         window,
@@ -94,4 +91,16 @@ def _show_open_project_dialog(
         QMessageBox.warning(window, "Не удалось открыть комплекс", str(error))
         return
 
-    project_label.setText(f"Открыт комплекс: {project_data['name']}")
+    _show_project_workspace(
+        window,
+        Path(selected_directory),
+        str(project_data["name"]),
+    )
+
+
+def _show_project_workspace(
+    window: QMainWindow,
+    project_path: Path,
+    project_name: str,
+) -> None:
+    window.setCentralWidget(ProjectWorkspace(project_path, project_name, window))

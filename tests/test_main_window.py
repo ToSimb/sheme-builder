@@ -70,7 +70,7 @@ def test_create_project_action_creates_project(qtbot, tmp_path):
         "button_text": "Создать",
     }
     assert (tmp_path / "demo-complex" / "project.json").is_file()
-    assert window.findChild(QLabel, "emptyProjectLabel").text() == (
+    assert window.findChild(QLabel, "projectNameLabel").text() == (
         "Открыт комплекс: demo-complex"
     )
 
@@ -93,7 +93,7 @@ def test_open_project_action_opens_existing_project(qtbot, tmp_path, monkeypatch
 
     assert action is not None
     action.trigger()
-    assert window.findChild(QLabel, "emptyProjectLabel").text() == (
+    assert window.findChild(QLabel, "projectNameLabel").text() == (
         "Открыт комплекс: existing-complex"
     )
 
@@ -132,3 +132,68 @@ def test_open_project_action_warns_for_directory_without_project_file(
     assert window.findChild(QLabel, "emptyProjectLabel").text() == (
         "Комплекс не открыт"
     )
+
+
+def test_open_project_shows_workspace_and_saves_metric(qtbot, tmp_path, monkeypatch):
+    import json
+
+    from PySide6.QtWidgets import (
+        QCheckBox,
+        QComboBox,
+        QFileDialog,
+        QLineEdit,
+        QListWidget,
+        QPlainTextEdit,
+        QSpinBox,
+        QTabWidget,
+    )
+
+    from scheme_builder.project import create_project
+
+    project_path = create_project(tmp_path, "metric-complex")
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: str(project_path),
+    )
+    window = create_main_window(projects_directory=tmp_path)
+    qtbot.addWidget(window)
+    window.findChild(QAction, "openProjectAction").trigger()
+
+    tabs = window.findChild(QTabWidget, "projectTabs")
+
+    assert tabs is not None
+    assert [tabs.tabText(index) for index in range(tabs.count())] == [
+        "Шаблоны",
+        "Метрики",
+    ]
+
+    window.findChild(QLineEdit, "metricIdEdit").setText("cpu_temperature")
+    window.findChild(QLineEdit, "metricNameEdit").setText("Температура CPU")
+    window.findChild(QPlainTextEdit, "metricCommentEdit").setPlainText(
+        "Температура процессора"
+    )
+    window.findChild(QComboBox, "metricTypeCombo").setCurrentText("double")
+    window.findChild(QCheckBox, "metricIsConfigCheck").setChecked(False)
+    window.findChild(QLineEdit, "metricDimensionEdit").setText("°C")
+    window.findChild(QLineEdit, "metricErrThrMinEdit").setText("0")
+    window.findChild(QLineEdit, "metricErrThrMaxEdit").setText("90")
+    window.findChild(QSpinBox, "metricQueryIntervalSpin").setValue(5)
+    window.findChild(QPushButton, "saveMetricButton").click()
+
+    metric_file = project_path / "library" / "metrics" / "cpu_temperature.json"
+    assert json.loads(metric_file.read_text(encoding="utf-8")) == {
+        "metric_id": "cpu_temperature",
+        "name": "Температура CPU",
+        "comment": "Температура процессора",
+        "type": "double",
+        "is_config": False,
+        "dimension": "°C",
+        "err_thr_min": 0.0,
+        "err_thr_max": 90.0,
+        "query_interval": 5,
+    }
+    metric_list = window.findChild(QListWidget, "metricList")
+    assert [metric_list.item(index).text() for index in range(metric_list.count())] == [
+        "cpu_temperature"
+    ]

@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QLabel,
@@ -6,10 +6,15 @@ from PySide6.QtWidgets import (
     QToolBar,
 )
 
+DEFAULT_WINDOW_SIZE = QSize(1100, 700)
+MINIMUM_WINDOW_SIZE = QSize(800, 500)
+
 
 def create_main_window() -> QMainWindow:
     window = QMainWindow()
     window.setWindowTitle("Scheme Builder")
+    window.resize(DEFAULT_WINDOW_SIZE)
+    window.setMinimumSize(MINIMUM_WINDOW_SIZE)
 
     project_toolbar = QToolBar("Проект", window)
     project_toolbar.setObjectName("projectToolBar")

@@ -1,3 +1,4 @@
+from PySide6.QtCore import QSize
 from PySide6.QtWidgets import QLabel, QToolBar
 
 from scheme_builder.ui.main_window import create_main_window
@@ -8,6 +9,14 @@ def test_main_window_has_expected_title(qtbot):
     qtbot.addWidget(window)
 
     assert window.windowTitle() == "Scheme Builder"
+
+
+def test_main_window_has_expected_size(qtbot):
+    window = create_main_window()
+    qtbot.addWidget(window)
+
+    assert window.size() == QSize(1100, 700)
+    assert window.minimumSize() == QSize(800, 500)
 
 
 def test_main_window_has_project_toolbar(qtbot):

@@ -170,7 +170,7 @@ def test_open_project_shows_workspace_and_saves_metric(qtbot, tmp_path, monkeypa
 
     window.findChild(QLineEdit, "metricIdEdit").setText("cpu_temperature")
     window.findChild(QLineEdit, "metricNameEdit").setText("Температура CPU")
-    window.findChild(QPlainTextEdit, "metricCommentEdit").setPlainText(
+    window.findChild(QPlainTextEdit, "metricDescriptionEdit").setPlainText(
         "Температура процессора"
     )
     window.findChild(QComboBox, "metricTypeCombo").setCurrentText("double")
@@ -178,14 +178,16 @@ def test_open_project_shows_workspace_and_saves_metric(qtbot, tmp_path, monkeypa
     window.findChild(QLineEdit, "metricDimensionEdit").setText("°C")
     window.findChild(QLineEdit, "metricErrThrMinEdit").setText("0")
     window.findChild(QLineEdit, "metricErrThrMaxEdit").setText("90")
-    window.findChild(QSpinBox, "metricQueryIntervalSpin").setValue(5)
+    query_interval_spin = window.findChild(QSpinBox, "metricQueryIntervalSpin")
+    assert query_interval_spin.value() == 10
+    query_interval_spin.setValue(5)
     window.findChild(QPushButton, "saveMetricButton").click()
 
     metric_file = project_path / "library" / "metrics" / "cpu_temperature.json"
     assert json.loads(metric_file.read_text(encoding="utf-8")) == {
         "metric_id": "cpu_temperature",
         "name": "Температура CPU",
-        "comment": "Температура процессора",
+        "description": "Температура процессора",
         "type": "double",
         "is_config": False,
         "dimension": "°C",

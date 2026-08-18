@@ -128,6 +128,10 @@ ENV/
 env.bak/
 venv.bak/
 
+
+# Локальные планы Hermes
+/.hermes/
+
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -162,9 +166,4 @@ cython_debug/
 # Свои
 DIR/
 *.db
-
-# Локальные проекты комплексов
 /complexes/
-
-# Локальные планы Hermes
-/.hermes/

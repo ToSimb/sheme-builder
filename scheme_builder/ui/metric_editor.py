@@ -57,10 +57,10 @@ class MetricEditor(QWidget):
         self.name_edit.setObjectName("metricNameEdit")
         fields_layout.addRow("Название:", self.name_edit)
 
-        self.comment_edit = QPlainTextEdit()
-        self.comment_edit.setObjectName("metricCommentEdit")
-        self.comment_edit.setMaximumHeight(90)
-        fields_layout.addRow("Комментарий:", self.comment_edit)
+        self.description_edit = QPlainTextEdit()
+        self.description_edit.setObjectName("metricDescriptionEdit")
+        self.description_edit.setMaximumHeight(90)
+        fields_layout.addRow("Описание:", self.description_edit)
 
         self.type_combo = QComboBox()
         self.type_combo.setObjectName("metricTypeCombo")
@@ -119,13 +119,13 @@ class MetricEditor(QWidget):
         self.metric_id_edit.setEnabled(True)
         self.metric_id_edit.clear()
         self.name_edit.clear()
-        self.comment_edit.clear()
+        self.description_edit.clear()
         self.type_combo.setCurrentIndex(0)
         self.is_config_check.setChecked(False)
         self.dimension_edit.clear()
         self.err_thr_min_edit.clear()
         self.err_thr_max_edit.clear()
-        self.query_interval_spin.setValue(1)
+        self.query_interval_spin.setValue(10)
         self.metric_id_edit.setFocus()
 
     def _save_metric(self) -> None:
@@ -139,18 +139,27 @@ class MetricEditor(QWidget):
         self._reload_metrics(selected_metric_id=str(metric["metric_id"]))
 
     def _collect_metric(self) -> dict[str, object]:
-        metric: dict[str, object] = {
-            "metric_id": self.metric_id_edit.text().strip(),
+        metric_id = self.metric_id_edit.text().strip()
+        metric = (
+            dict(self.metrics.get(metric_id, {}))
+            if not self.metric_id_edit.isEnabled()
+            else {}
+        )
+        metric.update({
+            "metric_id": metric_id,
             "name": self.name_edit.text().strip(),
             "type": self.type_combo.currentText(),
             "is_config": self.is_config_check.isChecked(),
             "dimension": self.dimension_edit.text().strip(),
             "query_interval": self.query_interval_spin.value(),
-        }
+        })
 
-        comment = self.comment_edit.toPlainText().strip()
-        if comment:
-            metric["comment"] = comment
+        description = self.description_edit.toPlainText().strip()
+        if description:
+            metric["description"] = description
+        else:
+            metric.pop("description", None)
+        metric.pop("comment", None)
 
         for field_name, field in (
             ("err_thr_min", self.err_thr_min_edit),
@@ -164,6 +173,8 @@ class MetricEditor(QWidget):
                     raise InvalidMetricError(
                         "Границы должны быть числами или оставаться пустыми."
                     ) from error
+            else:
+                metric.pop(field_name, None)
 
         return metric
 
@@ -191,7 +202,7 @@ class MetricEditor(QWidget):
         self.metric_id_edit.setText(metric_id)
         self.metric_id_edit.setEnabled(False)
         self.name_edit.setText(str(metric["name"]))
-        self.comment_edit.setPlainText(str(metric.get("comment", "")))
+        self.description_edit.setPlainText(str(metric.get("description", "")))
         self.type_combo.setCurrentText(str(metric["type"]))
         self.is_config_check.setChecked(bool(metric.get("is_config", False)))
         self.dimension_edit.setText(str(metric["dimension"]))

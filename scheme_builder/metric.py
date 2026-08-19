@@ -4,6 +4,7 @@ from pathlib import Path
 
 METRIC_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.]+$")
 METRIC_TYPES = ("string", "integer", "double", "state")
+METRICS_FILE_NAME = "metrics.json"
 
 
 class InvalidMetricError(ValueError):
@@ -33,7 +34,7 @@ def normalize_metric(metric: dict[str, object]) -> dict[str, object]:
     return normalized
 
 
-def save_metric(project_path: Path, metric: dict[str, object]) -> Path:
+def _validate_metric(metric: dict[str, object]) -> dict[str, object]:
     metric = normalize_metric(metric)
     metric_id = metric.get("metric_id")
     if not isinstance(metric_id, str) or not METRIC_ID_PATTERN.fullmatch(metric_id):
@@ -48,25 +49,81 @@ def save_metric(project_path: Path, metric: dict[str, object]) -> Path:
         raise InvalidMetricError("Единица измерения не должна быть пустой.")
 
     query_interval = metric.get("query_interval")
-    if not isinstance(query_interval, int) or not 1 <= query_interval <= 600:
+    if type(query_interval) is not int or not 1 <= query_interval <= 600:
         raise InvalidMetricError("Период опроса должен быть от 1 до 600 секунд.")
 
-    metrics_directory = project_path / "library" / "metrics"
-    metrics_directory.mkdir(parents=True, exist_ok=True)
-    metric_file = metrics_directory / f"{metric_id}.json"
+    if "is_config" in metric and type(metric["is_config"]) is not bool:
+        raise InvalidMetricError("Поле is_config должно быть логическим значением.")
+
+    for field_name in ("err_thr_min", "err_thr_max"):
+        if field_name in metric and (
+            isinstance(metric[field_name], bool)
+            or not isinstance(metric[field_name], (int, float))
+        ):
+            raise InvalidMetricError("Границы метрики должны быть числами.")
+
+    return metric
+
+
+def save_metric(project_path: Path, metric: dict[str, object]) -> Path:
+    metric = _validate_metric(metric)
+    metric_id = metric["metric_id"]
+
+    metrics = load_metrics(project_path)
+    for index, existing_metric in enumerate(metrics):
+        if existing_metric["metric_id"] == metric_id:
+            metrics[index] = metric
+            break
+    else:
+        metrics.append(metric)
+
+    metric_file = project_path / METRICS_FILE_NAME
     temporary_file = metric_file.with_name(metric_file.name + ".tmp")
-    temporary_file.write_text(
-        json.dumps(metric, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary_file.replace(metric_file)
+    try:
+        temporary_file.write_text(
+            json.dumps({"metrics": metrics}, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary_file.replace(metric_file)
+    except (OSError, UnicodeError, TypeError, ValueError) as error:
+        try:
+            temporary_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise InvalidMetricError("Не удалось записать файл metrics.json.") from error
     return metric_file
 
 
 def load_metrics(project_path: Path) -> list[dict[str, object]]:
-    metrics_directory = project_path / "library" / "metrics"
-    metrics = [
-        normalize_metric(json.loads(metric_file.read_text(encoding="utf-8")))
-        for metric_file in metrics_directory.glob("*.json")
-    ]
-    return sorted(metrics, key=lambda metric: str(metric["metric_id"]))
+    metric_file = project_path / METRICS_FILE_NAME
+    if not metric_file.is_file():
+        raise InvalidMetricError("В комплексе нет файла metrics.json.")
+
+    try:
+        metric_text = metric_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise InvalidMetricError("Не удалось прочитать файл metrics.json.") from error
+
+    try:
+        document = json.loads(metric_text)
+    except json.JSONDecodeError as error:
+        raise InvalidMetricError("Файл metrics.json содержит некорректный JSON.") from error
+
+    if not isinstance(document, dict) or not isinstance(document.get("metrics"), list):
+        raise InvalidMetricError(
+            "Файл metrics.json должен содержать объект с массивом metrics."
+        )
+
+    metrics: list[dict[str, object]] = []
+    metric_ids: set[str] = set()
+    for metric in document["metrics"]:
+        if not isinstance(metric, dict):
+            raise InvalidMetricError("Каждая метрика должна быть JSON-объектом.")
+        normalized_metric = _validate_metric(metric)
+        metric_id = normalized_metric["metric_id"]
+        if metric_id in metric_ids:
+            raise InvalidMetricError(f"metric_id '{metric_id}' встречается несколько раз.")
+        metric_ids.add(metric_id)
+        metrics.append(normalized_metric)
+
+    return metrics

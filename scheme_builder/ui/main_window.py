@@ -69,7 +69,11 @@ def _show_create_project_dialog(
     if dialog.exec() != QDialog.DialogCode.Accepted:
         return
 
-    project_path = create_project(projects_directory, dialog.project_name)
+    try:
+        project_path = create_project(projects_directory, dialog.project_name)
+    except InvalidProjectError as error:
+        QMessageBox.warning(window, "Не удалось создать комплекс", str(error))
+        return
     _show_project_workspace(window, project_path, project_path.name)
 
 

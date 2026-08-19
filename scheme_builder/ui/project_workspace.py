@@ -1,11 +1,7 @@
 from pathlib import Path
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QLabel,
-    QListWidget,
-    QSplitter,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -25,31 +21,8 @@ class ProjectWorkspace(QWidget):
         project_label = QLabel(f"Открыт комплекс: {project_name}", self)
         project_label.setObjectName("projectNameLabel")
 
-        tabs = QTabWidget(self)
-        tabs.setObjectName("projectTabs")
-        tabs.addTab(self._create_template_tab(), "Шаблоны")
-        tabs.addTab(MetricEditor(project_path, tabs), "Метрики")
-        tabs.setCurrentIndex(1)
+        metric_editor = MetricEditor(project_path, self)
 
         layout = QVBoxLayout(self)
         layout.addWidget(project_label)
-        layout.addWidget(tabs)
-
-    @staticmethod
-    def _create_template_tab() -> QWidget:
-        tab = QWidget()
-        splitter = QSplitter(Qt.Orientation.Horizontal, tab)
-
-        template_list = QListWidget(splitter)
-        template_list.setObjectName("templateList")
-        empty_editor = QLabel("Редактор шаблонов будет добавлен следующим этапом.", splitter)
-        empty_editor.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        splitter.addWidget(template_list)
-        splitter.addWidget(empty_editor)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 3)
-
-        layout = QVBoxLayout(tab)
-        layout.addWidget(splitter)
-        return tab
+        layout.addWidget(metric_editor, 1)

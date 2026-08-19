@@ -140,12 +140,25 @@ def save_metric(project_path: Path, metric: dict[str, object]) -> Path:
 
 
 def delete_metric(project_path: Path, metric_id: str) -> Path:
+    from scheme_builder.template import InvalidTemplateError, load_templates
+
     metrics = load_metrics(project_path)
     remaining_metrics = [
         metric for metric in metrics if metric["metric_id"] != metric_id
     ]
     if len(remaining_metrics) == len(metrics):
         raise InvalidMetricError(f"Метрика '{metric_id}' не найдена.")
+
+    try:
+        templates = load_templates(project_path)
+    except InvalidTemplateError as error:
+        raise InvalidMetricError(str(error)) from error
+    for template in templates:
+        if metric_id in template.get("metrics", []):
+            raise InvalidMetricError(
+                f"Метрика используется в шаблоне '{template['template_id']}' "
+                "и не может быть удалена."
+            )
     return _write_metrics(project_path, remaining_metrics)
 
 

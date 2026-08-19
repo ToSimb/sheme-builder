@@ -23,12 +23,17 @@ WINDOW_WIDTH = config.getint("window", "width")
 WINDOW_HEIGHT = config.getint("window", "height")
 MIN_WINDOW_WIDTH = config.getint("window", "min_width")
 MIN_WINDOW_HEIGHT = config.getint("window", "min_height")
+CATALOG_LIST_WIDTH = config.getint("window", "catalog_list_width")
 
 METRIC_TYPES = _items("metrics", "types")
 METRIC_DIMENSIONS = _items("metrics", "dimensions")
 DEFAULT_QUERY_INTERVAL = config.getint("metrics", "default_query_interval")
 MIN_QUERY_INTERVAL = config.getint("metrics", "min_query_interval")
 MAX_QUERY_INTERVAL = config.getint("metrics", "max_query_interval")
+TEMPLATE_METRIC_LIST_MIN_HEIGHT = config.getint(
+    "templates",
+    "metric_list_min_height",
+)
 
 if "none" not in METRIC_DIMENSIONS:
     raise RuntimeError("Список metrics.dimensions должен содержать none.")

@@ -19,7 +19,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from scheme_builder.ui.metric_list import apply_metric_group_stripes
 from scheme_builder.config import (
+    CATALOG_LIST_WIDTH,
     DEFAULT_QUERY_INTERVAL,
     MAX_QUERY_INTERVAL,
     METRIC_DIMENSIONS,
@@ -43,6 +45,7 @@ class MetricEditor(QWidget):
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
 
         list_panel = QWidget(splitter)
+        list_panel.setMinimumWidth(CATALOG_LIST_WIDTH)
         list_layout = QVBoxLayout(list_panel)
         self.metric_list = QListWidget(list_panel)
         self.metric_list.setObjectName("metricList")
@@ -221,6 +224,7 @@ class MetricEditor(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, metric_id)
             item.setToolTip(metric_id)
             self.metric_list.addItem(item)
+        apply_metric_group_stripes(self.metric_list)
 
         selected_item = None
         if selected_metric_id is not None:

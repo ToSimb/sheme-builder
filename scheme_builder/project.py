@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from scheme_builder.metric import InvalidMetricError, load_metrics
+from scheme_builder.template import InvalidTemplateError, load_templates
 
 
 class InvalidProjectError(ValueError):
@@ -28,8 +29,12 @@ def create_project(parent_directory: Path, name: str) -> Path:
             json.dumps({"metrics": []}, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+        (project_path / "templates.json").write_text(
+            json.dumps({"templates": []}, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
     except (OSError, UnicodeError) as error:
-        for file_name in ("project.json", "metrics.json"):
+        for file_name in ("project.json", "metrics.json", "templates.json"):
             try:
                 (project_path / file_name).unlink(missing_ok=True)
             except OSError:
@@ -71,7 +76,8 @@ def open_project(project_path: Path) -> dict[str, int | str]:
 
     try:
         load_metrics(project_path)
-    except InvalidMetricError as error:
+        load_templates(project_path)
+    except (InvalidMetricError, InvalidTemplateError) as error:
         raise InvalidProjectError(str(error)) from error
 
     return project_data

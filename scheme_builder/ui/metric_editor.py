@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -18,9 +19,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from scheme_builder.metric import (
+from scheme_builder.config import (
+    DEFAULT_QUERY_INTERVAL,
+    MAX_QUERY_INTERVAL,
+    METRIC_DIMENSIONS,
     METRIC_TYPES,
+    MIN_QUERY_INTERVAL,
+)
+from scheme_builder.metric import (
     InvalidMetricError,
+    delete_metric,
     load_metrics,
     save_metric,
 )
@@ -40,8 +48,16 @@ class MetricEditor(QWidget):
         self.metric_list.setObjectName("metricList")
         self.new_button = QPushButton("Создать метрику", list_panel)
         self.new_button.setObjectName("newMetricButton")
+        self.sort_button = QPushButton("Сортировать по metric_id", list_panel)
+        self.sort_button.setObjectName("sortMetricsButton")
+        self.sort_button.setCheckable(True)
+        self.delete_button = QPushButton("Удалить метрику", list_panel)
+        self.delete_button.setObjectName("deleteMetricButton")
+        self.delete_button.setEnabled(False)
         list_layout.addWidget(self.metric_list)
         list_layout.addWidget(self.new_button)
+        list_layout.addWidget(self.sort_button)
+        list_layout.addWidget(self.delete_button)
 
         scroll_area = QScrollArea(splitter)
         scroll_area.setWidgetResizable(True)
@@ -71,9 +87,10 @@ class MetricEditor(QWidget):
         self.is_config_check.setObjectName("metricIsConfigCheck")
         fields_layout.addRow("", self.is_config_check)
 
-        self.dimension_edit = QLineEdit()
-        self.dimension_edit.setObjectName("metricDimensionEdit")
-        fields_layout.addRow("Единица измерения:", self.dimension_edit)
+        self.dimension_combo = QComboBox()
+        self.dimension_combo.setObjectName("metricDimensionCombo")
+        self.dimension_combo.addItems(METRIC_DIMENSIONS)
+        fields_layout.addRow("Единица измерения:", self.dimension_combo)
 
         self.err_thr_min_edit = QLineEdit()
         self.err_thr_min_edit.setObjectName("metricErrThrMinEdit")
@@ -87,7 +104,7 @@ class MetricEditor(QWidget):
 
         self.query_interval_spin = QSpinBox()
         self.query_interval_spin.setObjectName("metricQueryIntervalSpin")
-        self.query_interval_spin.setRange(1, 600)
+        self.query_interval_spin.setRange(MIN_QUERY_INTERVAL, MAX_QUERY_INTERVAL)
         self.query_interval_spin.setSuffix(" с")
         fields_layout.addRow("Период опроса:", self.query_interval_spin)
 
@@ -107,25 +124,29 @@ class MetricEditor(QWidget):
         layout.addWidget(splitter)
 
         self.new_button.clicked.connect(self._new_metric)
+        self.sort_button.toggled.connect(self._sort_metrics)
+        self.delete_button.clicked.connect(self._delete_selected_metric)
         self.save_button.clicked.connect(self._save_metric)
-        self.metric_list.currentTextChanged.connect(self._load_selected_metric)
+        self.metric_list.currentItemChanged.connect(self._selection_changed)
+        self.type_combo.currentTextChanged.connect(self._update_type_fields)
 
         self._reload_metrics()
         if self.metric_list.count() == 0:
             self._new_metric()
 
     def _new_metric(self) -> None:
-        self.metric_list.clearSelection()
+        self.metric_list.setCurrentRow(-1)
         self.metric_id_edit.setEnabled(True)
         self.metric_id_edit.clear()
         self.name_edit.clear()
         self.description_edit.clear()
         self.type_combo.setCurrentIndex(0)
         self.is_config_check.setChecked(False)
-        self.dimension_edit.clear()
+        self.dimension_combo.setCurrentText("none")
         self.err_thr_min_edit.clear()
         self.err_thr_max_edit.clear()
-        self.query_interval_spin.setValue(10)
+        self.query_interval_spin.setValue(DEFAULT_QUERY_INTERVAL)
+        self._update_type_fields(self.type_combo.currentText())
         self.metric_id_edit.setFocus()
 
     def _save_metric(self) -> None:
@@ -145,27 +166,32 @@ class MetricEditor(QWidget):
             if not self.metric_id_edit.isEnabled()
             else {}
         )
+        name = self.name_edit.text().strip()
+        metric_type = self.type_combo.currentText()
         metric.update({
             "metric_id": metric_id,
-            "name": self.name_edit.text().strip(),
-            "type": self.type_combo.currentText(),
-            "is_config": self.is_config_check.isChecked(),
-            "dimension": self.dimension_edit.text().strip(),
+            "name": name,
+            "type": metric_type,
+            "dimension": self.dimension_combo.currentText(),
+            "description": self.description_edit.toPlainText().strip() or name,
             "query_interval": self.query_interval_spin.value(),
         })
 
-        description = self.description_edit.toPlainText().strip()
-        if description:
-            metric["description"] = description
+        if self.is_config_check.isChecked():
+            metric["is_config"] = True
         else:
-            metric.pop("description", None)
+            metric.pop("is_config", None)
         metric.pop("comment", None)
 
         for field_name, field in (
             ("err_thr_min", self.err_thr_min_edit),
             ("err_thr_max", self.err_thr_max_edit),
         ):
-            value = field.text().strip()
+            value = (
+                field.text().strip()
+                if metric_type in ("integer", "double")
+                else ""
+            )
             if value:
                 try:
                     metric[field_name] = float(value.replace(",", "."))
@@ -183,16 +209,80 @@ class MetricEditor(QWidget):
             str(metric["metric_id"]): metric
             for metric in load_metrics(self.project_path)
         }
+        signal_blocker = QSignalBlocker(self.metric_list)
         self.metric_list.clear()
-        self.metric_list.addItems(self.metrics)
+        metric_ids = list(self.metrics)
+        if self.sort_button.isChecked():
+            metric_ids.sort(key=str.casefold)
 
+        for metric_id in metric_ids:
+            metric = self.metrics[metric_id]
+            item = QListWidgetItem(f"{metric_id} ({metric['name']})")
+            item.setData(Qt.ItemDataRole.UserRole, metric_id)
+            item.setToolTip(metric_id)
+            self.metric_list.addItem(item)
+
+        selected_item = None
         if selected_metric_id is not None:
-            matching_items = self.metric_list.findItems(
-                selected_metric_id,
-                Qt.MatchFlag.MatchExactly,
-            )
-            if matching_items:
-                self.metric_list.setCurrentItem(matching_items[0])
+            for row in range(self.metric_list.count()):
+                item = self.metric_list.item(row)
+                if item.data(Qt.ItemDataRole.UserRole) == selected_metric_id:
+                    selected_item = item
+                    break
+        del signal_blocker
+
+        self.delete_button.setEnabled(False)
+        if selected_item is not None:
+            self.metric_list.setCurrentItem(selected_item)
+
+    def _selection_changed(
+        self,
+        current_item: QListWidgetItem | None,
+        previous_item: QListWidgetItem | None,
+    ) -> None:
+        del previous_item
+        self.delete_button.setEnabled(current_item is not None)
+        if current_item is not None:
+            metric_id = str(current_item.data(Qt.ItemDataRole.UserRole))
+            if metric_id in self.metrics:
+                self._load_selected_metric(metric_id)
+
+    def _sort_metrics(self) -> None:
+        self._reload_metrics(self._selected_metric_id())
+
+    def _delete_selected_metric(self) -> None:
+        metric_id = self._selected_metric_id()
+        if metric_id is None:
+            return
+
+        metric_name = str(self.metrics[metric_id]["name"])
+        answer = QMessageBox.question(
+            self,
+            "Удалить метрику",
+            f"Удалить метрику «{metric_name}» ({metric_id})?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            delete_metric(self.project_path, metric_id)
+        except InvalidMetricError as error:
+            QMessageBox.warning(self, "Не удалось удалить метрику", str(error))
+            return
+
+        self._reload_metrics()
+        if self.metric_list.count():
+            self.metric_list.setCurrentRow(0)
+        else:
+            self._new_metric()
+
+    def _selected_metric_id(self) -> str | None:
+        current_item = self.metric_list.currentItem()
+        if current_item is None:
+            return None
+        return str(current_item.data(Qt.ItemDataRole.UserRole))
 
     def _load_selected_metric(self, metric_id: str) -> None:
         if not metric_id:
@@ -205,10 +295,24 @@ class MetricEditor(QWidget):
         self.description_edit.setPlainText(str(metric.get("description", "")))
         self.type_combo.setCurrentText(str(metric["type"]))
         self.is_config_check.setChecked(bool(metric.get("is_config", False)))
-        self.dimension_edit.setText(str(metric["dimension"]))
+        dimension = str(metric["dimension"])
+        if self.dimension_combo.findText(dimension) == -1:
+            self.dimension_combo.addItem(dimension)
+        self.dimension_combo.setCurrentText(dimension)
         self.err_thr_min_edit.setText(self._optional_number(metric.get("err_thr_min")))
         self.err_thr_max_edit.setText(self._optional_number(metric.get("err_thr_max")))
         self.query_interval_spin.setValue(int(metric["query_interval"]))
+        self._update_type_fields(self.type_combo.currentText())
+
+    def _update_type_fields(self, metric_type: str) -> None:
+        dimension_is_fixed = metric_type in ("string", "state")
+        if dimension_is_fixed:
+            self.dimension_combo.setCurrentText("none")
+        self.dimension_combo.setEnabled(not dimension_is_fixed)
+
+        thresholds_enabled = metric_type in ("integer", "double")
+        self.err_thr_min_edit.setEnabled(thresholds_enabled)
+        self.err_thr_max_edit.setEnabled(thresholds_enabled)
 
     @staticmethod
     def _optional_number(value: object) -> str:

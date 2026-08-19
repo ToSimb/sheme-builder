@@ -11,12 +11,18 @@ from PySide6.QtWidgets import (
     QToolBar,
 )
 
+from scheme_builder.config import (
+    MIN_WINDOW_HEIGHT,
+    MIN_WINDOW_WIDTH,
+    WINDOW_HEIGHT,
+    WINDOW_WIDTH,
+)
 from scheme_builder.project import InvalidProjectError, create_project, open_project
 from scheme_builder.ui.create_project_dialog import CreateProjectDialog
 from scheme_builder.ui.project_workspace import ProjectWorkspace
 
-DEFAULT_WINDOW_SIZE = QSize(1100, 700)
-MINIMUM_WINDOW_SIZE = QSize(800, 500)
+DEFAULT_WINDOW_SIZE = QSize(WINDOW_WIDTH, WINDOW_HEIGHT)
+MINIMUM_WINDOW_SIZE = QSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
 DEFAULT_PROJECTS_DIRECTORY = Path(__file__).resolve().parents[2] / "complexes"
 
 

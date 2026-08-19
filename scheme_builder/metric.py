@@ -1,9 +1,15 @@
 import json
+import math
 import re
 from pathlib import Path
 
+from scheme_builder.config import (
+    MAX_QUERY_INTERVAL,
+    METRIC_TYPES,
+    MIN_QUERY_INTERVAL,
+)
+
 METRIC_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.]+$")
-METRIC_TYPES = ("string", "integer", "double", "state")
 METRICS_FILE_NAME = "metrics.json"
 
 
@@ -31,6 +37,8 @@ def normalize_metric(metric: dict[str, object]) -> dict[str, object]:
     if not has_description and has_comment:
         normalized["description"] = comment
     normalized.pop("comment", None)
+    if not normalized.get("description") and isinstance(normalized.get("name"), str):
+        normalized["description"] = normalized["name"]
     return normalized
 
 
@@ -43,40 +51,62 @@ def _validate_metric(metric: dict[str, object]) -> dict[str, object]:
         )
     if not isinstance(metric.get("name"), str) or not metric["name"]:
         raise InvalidMetricError("Название метрики не должно быть пустым.")
+    if not isinstance(metric.get("description"), str) or not metric["description"]:
+        raise InvalidMetricError("Описание метрики не должно быть пустым.")
     if metric.get("type") not in METRIC_TYPES:
         raise InvalidMetricError("Указан неподдерживаемый тип метрики.")
     if not isinstance(metric.get("dimension"), str) or not metric["dimension"]:
         raise InvalidMetricError("Единица измерения не должна быть пустой.")
+    if metric["type"] in ("string", "state") and metric["dimension"] != "none":
+        raise InvalidMetricError(
+            "Для типов string и state единица измерения должна быть none."
+        )
 
     query_interval = metric.get("query_interval")
-    if type(query_interval) is not int or not 1 <= query_interval <= 600:
-        raise InvalidMetricError("Период опроса должен быть от 1 до 600 секунд.")
+    if (
+        type(query_interval) is not int
+        or not MIN_QUERY_INTERVAL <= query_interval <= MAX_QUERY_INTERVAL
+    ):
+        raise InvalidMetricError(
+            "Период опроса должен быть от "
+            f"{MIN_QUERY_INTERVAL} до {MAX_QUERY_INTERVAL} секунд."
+        )
 
     if "is_config" in metric and type(metric["is_config"]) is not bool:
         raise InvalidMetricError("Поле is_config должно быть логическим значением.")
+    if metric.get("is_config") is False:
+        metric.pop("is_config")
 
+    has_threshold = False
     for field_name in ("err_thr_min", "err_thr_max"):
-        if field_name in metric and (
-            isinstance(metric[field_name], bool)
-            or not isinstance(metric[field_name], (int, float))
+        if field_name not in metric:
+            continue
+        has_threshold = True
+        value = metric[field_name]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or isinstance(value, float) and not math.isfinite(value)
         ):
-            raise InvalidMetricError("Границы метрики должны быть числами.")
+            raise InvalidMetricError("Границы метрики должны быть конечными числами.")
+
+    if has_threshold and metric["type"] not in ("integer", "double"):
+        raise InvalidMetricError(
+            "Границы можно задавать только для типов integer и double."
+        )
+    if (
+        "err_thr_min" in metric
+        and "err_thr_max" in metric
+        and metric["err_thr_min"] > metric["err_thr_max"]
+    ):
+        raise InvalidMetricError(
+            "Нижняя граница не должна быть больше верхней."
+        )
 
     return metric
 
 
-def save_metric(project_path: Path, metric: dict[str, object]) -> Path:
-    metric = _validate_metric(metric)
-    metric_id = metric["metric_id"]
-
-    metrics = load_metrics(project_path)
-    for index, existing_metric in enumerate(metrics):
-        if existing_metric["metric_id"] == metric_id:
-            metrics[index] = metric
-            break
-    else:
-        metrics.append(metric)
-
+def _write_metrics(project_path: Path, metrics: list[dict[str, object]]) -> Path:
     metric_file = project_path / METRICS_FILE_NAME
     temporary_file = metric_file.with_name(metric_file.name + ".tmp")
     try:
@@ -92,6 +122,31 @@ def save_metric(project_path: Path, metric: dict[str, object]) -> Path:
             pass
         raise InvalidMetricError("Не удалось записать файл metrics.json.") from error
     return metric_file
+
+
+def save_metric(project_path: Path, metric: dict[str, object]) -> Path:
+    metric = _validate_metric(metric)
+    metric_id = metric["metric_id"]
+
+    metrics = load_metrics(project_path)
+    for index, existing_metric in enumerate(metrics):
+        if existing_metric["metric_id"] == metric_id:
+            metrics[index] = metric
+            break
+    else:
+        metrics.append(metric)
+
+    return _write_metrics(project_path, metrics)
+
+
+def delete_metric(project_path: Path, metric_id: str) -> Path:
+    metrics = load_metrics(project_path)
+    remaining_metrics = [
+        metric for metric in metrics if metric["metric_id"] != metric_id
+    ]
+    if len(remaining_metrics) == len(metrics):
+        raise InvalidMetricError(f"Метрика '{metric_id}' не найдена.")
+    return _write_metrics(project_path, remaining_metrics)
 
 
 def load_metrics(project_path: Path) -> list[dict[str, object]]:

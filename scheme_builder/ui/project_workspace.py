@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from scheme_builder.ui.agent_scheme_editor import AgentSchemeEditor
 from scheme_builder.ui.metric_editor import MetricEditor
 from scheme_builder.ui.template_editor import TemplateEditor
 
@@ -25,17 +26,21 @@ class ProjectWorkspace(QWidget):
 
         self.metric_editor = MetricEditor(project_path, self)
         self.template_editor = TemplateEditor(project_path, self)
+        self.agent_scheme_editor = AgentSchemeEditor(project_path, self)
 
-        tabs = QTabWidget(self)
-        tabs.setObjectName("projectTabs")
-        tabs.addTab(self.metric_editor, "Метрики")
-        tabs.addTab(self.template_editor, "Шаблоны")
-        tabs.currentChanged.connect(self._refresh_current_tab)
+        self.tabs = QTabWidget(self)
+        self.tabs.setObjectName("projectTabs")
+        self.tabs.addTab(self.metric_editor, "Метрики")
+        self.tabs.addTab(self.template_editor, "Шаблоны")
+        self.tabs.addTab(self.agent_scheme_editor, "AgentScheme")
+        self.tabs.currentChanged.connect(self._refresh_current_tab)
 
         layout = QVBoxLayout(self)
         layout.addWidget(project_label)
-        layout.addWidget(tabs, 1)
+        layout.addWidget(self.tabs, 1)
 
     def _refresh_current_tab(self, index: int) -> None:
         if index == 1:
             self.template_editor.refresh()
+        elif index == 2:
+            self.agent_scheme_editor.refresh()

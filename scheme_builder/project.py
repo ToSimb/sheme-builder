@@ -1,6 +1,10 @@
 import json
 from pathlib import Path
 
+from scheme_builder.agent_scheme import (
+    InvalidAgentSchemeError,
+    load_agent_schemes,
+)
 from scheme_builder.metric import InvalidMetricError, load_metrics
 from scheme_builder.template import InvalidTemplateError, load_templates
 
@@ -33,8 +37,22 @@ def create_project(parent_directory: Path, name: str) -> Path:
             json.dumps({"templates": []}, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+        (project_path / "agent_schemes.json").write_text(
+            json.dumps(
+                {"agent_schemes": []},
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     except (OSError, UnicodeError) as error:
-        for file_name in ("project.json", "metrics.json", "templates.json"):
+        for file_name in (
+            "project.json",
+            "metrics.json",
+            "templates.json",
+            "agent_schemes.json",
+        ):
             try:
                 (project_path / file_name).unlink(missing_ok=True)
             except OSError:
@@ -77,7 +95,12 @@ def open_project(project_path: Path) -> dict[str, int | str]:
     try:
         load_metrics(project_path)
         load_templates(project_path)
-    except (InvalidMetricError, InvalidTemplateError) as error:
+        load_agent_schemes(project_path)
+    except (
+        InvalidAgentSchemeError,
+        InvalidMetricError,
+        InvalidTemplateError,
+    ) as error:
         raise InvalidProjectError(str(error)) from error
 
     return project_data

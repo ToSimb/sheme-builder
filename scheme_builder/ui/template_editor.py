@@ -1,7 +1,6 @@
 from pathlib import Path
 
 from PySide6.QtCore import QSignalBlocker, Qt
-from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -33,8 +32,7 @@ from scheme_builder.template import (
     save_template,
 )
 from scheme_builder.ui.metric_list import apply_metric_group_stripes
-
-MISSING_REFERENCE_BRUSH = QBrush(QColor("#c62828"))
+from scheme_builder.ui.reference_status import MISSING_REFERENCE_BRUSH
 
 
 class TemplateEditor(QWidget):

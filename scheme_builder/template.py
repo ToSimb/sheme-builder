@@ -201,6 +201,11 @@ def save_template(project_path: Path, template: dict[str, object]) -> Path:
 
 
 def delete_template(project_path: Path, template_id: str) -> Path:
+    from scheme_builder.agent_scheme import (
+        InvalidAgentSchemeError,
+        load_agent_schemes,
+    )
+
     templates = load_templates(project_path)
     if not any(template["template_id"] == template_id for template in templates):
         raise InvalidTemplateError(f"Шаблон '{template_id}' не найден.")
@@ -212,6 +217,20 @@ def delete_template(project_path: Path, template_id: str) -> Path:
                     f"Шаблон используется в '{template['template_id']}' "
                     "и не может быть удалён."
                 )
+
+    try:
+        agent_schemes = load_agent_schemes(project_path)
+    except InvalidAgentSchemeError as error:
+        raise InvalidTemplateError(str(error)) from error
+    for agent_scheme in agent_schemes:
+        if any(
+            root["template_id"] == template_id
+            for root in agent_scheme["roots"]
+        ):
+            raise InvalidTemplateError(
+                f"Шаблон используется в AgentScheme "
+                f"'{agent_scheme['agent_scheme_id']}' и не может быть удалён."
+            )
 
     remaining_templates = [
         template for template in templates if template["template_id"] != template_id

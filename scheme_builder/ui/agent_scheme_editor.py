@@ -28,8 +28,9 @@ from scheme_builder.agent_scheme import (
     save_agent_scheme,
 )
 from scheme_builder.config import CATALOG_LIST_WIDTH
-from scheme_builder.template import load_templates
+from scheme_builder.template import InvalidTemplateError, load_templates
 from scheme_builder.ui.reference_status import MISSING_REFERENCE_BRUSH
+from scheme_builder.ui.unsaved_changes import UnsavedChanges
 
 
 class AgentSchemeEditor(QWidget):
@@ -132,10 +133,18 @@ class AgentSchemeEditor(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(splitter)
 
-        self.new_button.clicked.connect(self._new_agent_scheme)
+        self.unsaved = UnsavedChanges(
+            self, [self.agent_scheme_id_edit, self.name_edit, self.description_edit],
+            lambda: self.roots, self._save_agent_scheme, self._reset_draft,
+        )
+        self.new_button.clicked.connect(
+            lambda: self.unsaved.run(self._new_agent_scheme)
+        )
         self.sort_button.toggled.connect(self._sort_agent_schemes)
-        self.delete_button.clicked.connect(self._delete_selected_agent_scheme)
-        self.save_button.clicked.connect(self._save_agent_scheme)
+        self.delete_button.clicked.connect(
+            lambda: self.unsaved.run(self._delete_selected_agent_scheme)
+        )
+        self.save_button.clicked.connect(self.unsaved.save_changes)
         self.agent_scheme_list.currentItemChanged.connect(
             self._selection_changed
         )
@@ -154,8 +163,17 @@ class AgentSchemeEditor(QWidget):
     def refresh(self) -> None:
         self._reload_agent_schemes(self._selected_agent_scheme_id())
 
+    def _reset_draft(self) -> None:
+        agent_scheme_id = self._selected_agent_scheme_id()
+        if agent_scheme_id is None:
+            self._new_agent_scheme()
+        else:
+            self._load_selected_agent_scheme(agent_scheme_id)
+
     def _new_agent_scheme(self) -> None:
-        self.agent_scheme_list.setCurrentRow(-1)
+        with QSignalBlocker(self.agent_scheme_list):
+            self.agent_scheme_list.setCurrentRow(-1)
+        self.delete_button.setEnabled(False)
         self.agent_scheme_id_edit.setEnabled(True)
         self.agent_scheme_id_edit.clear()
         self.name_edit.clear()
@@ -165,8 +183,9 @@ class AgentSchemeEditor(QWidget):
         self._reload_root_choices()
         self._reload_tree()
         self.agent_scheme_id_edit.setFocus()
+        self.unsaved.mark_clean()
 
-    def _save_agent_scheme(self) -> None:
+    def _save_agent_scheme(self) -> bool:
         try:
             agent_scheme = self._collect_agent_scheme()
             save_agent_scheme(self.project_path, agent_scheme)
@@ -176,10 +195,12 @@ class AgentSchemeEditor(QWidget):
                 "Не удалось сохранить AgentScheme",
                 str(error),
             )
-            return
+            return False
+        self.unsaved.mark_clean()
         self._reload_agent_schemes(
             selected_agent_scheme_id=str(agent_scheme["agent_scheme_id"])
         )
+        return True
 
     def _collect_agent_scheme(self) -> dict[str, object]:
         name = self.name_edit.text().strip()
@@ -244,13 +265,10 @@ class AgentSchemeEditor(QWidget):
         current_item: QListWidgetItem | None,
         previous_item: QListWidgetItem | None,
     ) -> None:
-        del previous_item
-        self.delete_button.setEnabled(current_item is not None)
-        if current_item is None:
-            return
-        agent_scheme_id = str(current_item.data(Qt.ItemDataRole.UserRole))
-        if agent_scheme_id in self.agent_schemes:
-            self._load_selected_agent_scheme(agent_scheme_id)
+        self.unsaved.select(
+            self.agent_scheme_list, current_item, previous_item,
+            self._load_selected_agent_scheme,
+        )
 
     def _load_selected_agent_scheme(self, agent_scheme_id: str) -> None:
         agent_scheme = self.agent_schemes[agent_scheme_id]
@@ -262,6 +280,7 @@ class AgentSchemeEditor(QWidget):
         self._reload_root_list()
         self._reload_root_choices()
         self._reload_tree()
+        self.unsaved.mark_clean()
 
     def _reload_root_choices(self) -> None:
         self.root_template_combo.clear()
@@ -338,7 +357,7 @@ class AgentSchemeEditor(QWidget):
         }
         try:
             roots = build_agent_tree(self.project_path, preview)
-        except InvalidAgentSchemeError as error:
+        except (InvalidAgentSchemeError, InvalidTemplateError) as error:
             self.tree_summary_label.setText(str(error))
             return
 
@@ -379,7 +398,11 @@ class AgentSchemeEditor(QWidget):
         )
 
     def _sort_agent_schemes(self) -> None:
-        self._reload_agent_schemes(self._selected_agent_scheme_id())
+        if not self.unsaved.run(
+            lambda: self._reload_agent_schemes(self._selected_agent_scheme_id())
+        ):
+            with QSignalBlocker(self.sort_button):
+                self.sort_button.setChecked(not self.sort_button.isChecked())
 
     def _delete_selected_agent_scheme(self) -> None:
         agent_scheme_id = self._selected_agent_scheme_id()

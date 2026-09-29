@@ -1,7 +1,9 @@
 from pathlib import Path
 
+from PySide6.QtCore import QSignalBlocker
 from PySide6.QtWidgets import (
     QLabel,
+    QMessageBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -10,6 +12,7 @@ from PySide6.QtWidgets import (
 from scheme_builder.ui.agent_scheme_editor import AgentSchemeEditor
 from scheme_builder.ui.metric_editor import MetricEditor
 from scheme_builder.ui.template_editor import TemplateEditor
+from scheme_builder.ui.unsaved_changes import EDITOR_ERRORS
 
 
 class ProjectWorkspace(QWidget):
@@ -33,14 +36,33 @@ class ProjectWorkspace(QWidget):
         self.tabs.addTab(self.metric_editor, "Метрики")
         self.tabs.addTab(self.template_editor, "Шаблоны")
         self.tabs.addTab(self.agent_scheme_editor, "AgentScheme")
+        self._active_tab = self.tabs.currentIndex()
         self.tabs.currentChanged.connect(self._refresh_current_tab)
 
         layout = QVBoxLayout(self)
         layout.addWidget(project_label)
         layout.addWidget(self.tabs, 1)
 
+    def confirm_leave(self) -> bool:
+        return self.tabs.widget(self._active_tab).unsaved.confirm()
+
     def _refresh_current_tab(self, index: int) -> None:
-        if index == 1:
-            self.template_editor.refresh()
-        elif index == 2:
-            self.agent_scheme_editor.refresh()
+        if index < 0 or index == self._active_tab:
+            return
+        with QSignalBlocker(self.tabs):
+            self.tabs.setCurrentIndex(self._active_tab)
+        if not self.confirm_leave():
+            return
+        try:
+            if index == 0:
+                self.metric_editor.refresh_usage()
+            elif index == 1:
+                self.template_editor.refresh()
+            elif index == 2:
+                self.agent_scheme_editor.refresh()
+        except EDITOR_ERRORS as error:
+            QMessageBox.warning(self, "Не удалось обновить вкладку", str(error))
+            return
+        with QSignalBlocker(self.tabs):
+            self.tabs.setCurrentIndex(index)
+        self._active_tab = index

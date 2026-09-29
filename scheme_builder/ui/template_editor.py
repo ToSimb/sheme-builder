@@ -33,6 +33,9 @@ from scheme_builder.template import (
 )
 from scheme_builder.ui.metric_list import apply_metric_group_stripes
 from scheme_builder.ui.reference_status import MISSING_REFERENCE_BRUSH
+from scheme_builder.ui.unsaved_changes import UnsavedChanges
+from scheme_builder.ui.usage_status import apply_usage_marks
+from scheme_builder.agent_scheme import load_agent_schemes
 
 
 class TemplateEditor(QWidget):
@@ -52,6 +55,9 @@ class TemplateEditor(QWidget):
         self.template_list.setObjectName("templateList")
         self.new_button = QPushButton("Создать шаблон", list_panel)
         self.new_button.setObjectName("newTemplateButton")
+        self.duplicate_button = QPushButton("Дублировать", list_panel)
+        self.duplicate_button.setObjectName("duplicateTemplateButton")
+        self.duplicate_button.setEnabled(False)
         self.sort_button = QPushButton("Сортировать по template_id", list_panel)
         self.sort_button.setObjectName("sortTemplatesButton")
         self.sort_button.setCheckable(True)
@@ -60,6 +66,7 @@ class TemplateEditor(QWidget):
         self.delete_button.setEnabled(False)
         list_layout.addWidget(self.template_list)
         list_layout.addWidget(self.new_button)
+        list_layout.addWidget(self.duplicate_button)
         list_layout.addWidget(self.sort_button)
         list_layout.addWidget(self.delete_button)
 
@@ -132,11 +139,30 @@ class TemplateEditor(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(splitter)
 
-        self.new_button.clicked.connect(self._new_template)
+        self.unsaved = UnsavedChanges(
+            self, [self.template_id_edit, self.name_edit, self.description_edit],
+            lambda: (self.includes, [
+                self.metric_list.item(row).data(Qt.ItemDataRole.UserRole)
+                for row in range(self.metric_list.count())
+                if self.metric_list.item(row).checkState() == Qt.CheckState.Checked
+            ]),
+            self._save_template, self._reset_draft,
+        )
+        self.new_button.clicked.connect(lambda: self.unsaved.run(self._new_template))
+        self.duplicate_button.clicked.connect(
+            lambda: self.unsaved.run(self._duplicate_template)
+        )
         self.sort_button.toggled.connect(self._sort_templates)
-        self.delete_button.clicked.connect(self._delete_selected_template)
-        self.save_button.clicked.connect(self._save_template)
+        self.delete_button.clicked.connect(
+            lambda: self.unsaved.run(self._delete_selected_template)
+        )
+        self.save_button.clicked.connect(self.unsaved.save_changes)
         self.template_list.currentItemChanged.connect(self._selection_changed)
+        self.template_list.currentItemChanged.connect(
+            lambda: self.duplicate_button.setEnabled(
+                self._selected_template_id() is not None
+            )
+        )
         self.add_include_button.clicked.connect(self._add_include)
         self.remove_include_button.clicked.connect(self._remove_include)
         self.include_list.currentItemChanged.connect(
@@ -152,8 +178,37 @@ class TemplateEditor(QWidget):
     def refresh(self) -> None:
         self._reload_templates(self._selected_template_id())
 
+    def _duplicate_template(self) -> None:
+        template_id = self._selected_template_id()
+        if template_id is None:
+            return
+        templates = {
+            template["template_id"]: template
+            for template in load_templates(self.project_path)
+        }
+        if template_id not in templates:
+            raise InvalidTemplateError(f"Шаблон '{template_id}' не найден.")
+        duplicate = dict(templates[template_id])
+        copy_id = template_id + "_copy"
+        while copy_id in templates:
+            copy_id += "_copy"
+        duplicate["template_id"] = copy_id
+        duplicate["name"] += "_copy"
+        save_template(self.project_path, duplicate)
+        self._reload_templates(copy_id)
+
+    def _reset_draft(self) -> None:
+        template_id = self._selected_template_id()
+        if template_id is None:
+            self._new_template()
+        else:
+            self._load_selected_template(template_id)
+
     def _new_template(self) -> None:
-        self.template_list.setCurrentRow(-1)
+        with QSignalBlocker(self.template_list):
+            self.template_list.setCurrentRow(-1)
+        self.duplicate_button.setEnabled(False)
+        self.delete_button.setEnabled(False)
         self.template_id_edit.setEnabled(True)
         self.template_id_edit.clear()
         self.name_edit.clear()
@@ -163,16 +218,19 @@ class TemplateEditor(QWidget):
         self._reload_include_list()
         self._reload_include_choices(None)
         self.template_id_edit.setFocus()
+        self.unsaved.mark_clean()
 
-    def _save_template(self) -> None:
+    def _save_template(self) -> bool:
         try:
             template = self._collect_template()
             save_template(self.project_path, template)
         except (InvalidMetricError, InvalidTemplateError) as error:
             QMessageBox.warning(self, "Не удалось сохранить шаблон", str(error))
-            return
+            return False
 
+        self.unsaved.mark_clean()
         self._reload_templates(selected_template_id=str(template["template_id"]))
+        return True
 
     def _collect_template(self) -> dict[str, object]:
         name = self.name_edit.text().strip()
@@ -202,6 +260,16 @@ class TemplateEditor(QWidget):
             str(template["template_id"]): template
             for template in load_templates(self.project_path)
         }
+        used_ids = {
+            include["template_id"]
+            for template in self.templates.values()
+            for include in template.get("includes", [])
+        }
+        used_ids.update(
+            root["template_id"]
+            for agent in load_agent_schemes(self.project_path)
+            for root in agent["roots"]
+        )
         signal_blocker = QSignalBlocker(self.template_list)
         self.template_list.clear()
         template_ids = list(self.templates)
@@ -229,6 +297,7 @@ class TemplateEditor(QWidget):
             self.template_list.addItem(item)
             if template_id == selected_template_id:
                 selected_item = item
+        apply_usage_marks(self.template_list, used_ids)
         del signal_blocker
 
         self.delete_button.setEnabled(False)
@@ -242,13 +311,9 @@ class TemplateEditor(QWidget):
         current_item: QListWidgetItem | None,
         previous_item: QListWidgetItem | None,
     ) -> None:
-        del previous_item
-        self.delete_button.setEnabled(current_item is not None)
-        if current_item is None:
-            return
-        template_id = str(current_item.data(Qt.ItemDataRole.UserRole))
-        if template_id in self.templates:
-            self._load_selected_template(template_id)
+        self.unsaved.select(
+            self.template_list, current_item, previous_item, self._load_selected_template
+        )
 
     def _load_selected_template(self, template_id: str) -> None:
         template = self.templates[template_id]
@@ -260,6 +325,7 @@ class TemplateEditor(QWidget):
         self._reload_metric_choices(set(template.get("metrics", [])))
         self._reload_include_list()
         self._reload_include_choices(template_id)
+        self.unsaved.mark_clean()
 
     def _reload_metric_choices(self, selected_metric_ids: set[object]) -> None:
         signal_blocker = QSignalBlocker(self.metric_list)
@@ -345,7 +411,11 @@ class TemplateEditor(QWidget):
         self._reload_include_choices(self._selected_template_id())
 
     def _sort_templates(self) -> None:
-        self._reload_templates(self._selected_template_id())
+        if not self.unsaved.run(
+            lambda: self._reload_templates(self._selected_template_id())
+        ):
+            with QSignalBlocker(self.sort_button):
+                self.sort_button.setChecked(not self.sort_button.isChecked())
 
     def _delete_selected_template(self) -> None:
         template_id = self._selected_template_id()

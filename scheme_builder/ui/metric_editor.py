@@ -20,6 +20,9 @@ from PySide6.QtWidgets import (
 )
 
 from scheme_builder.ui.metric_list import apply_metric_group_stripes
+from scheme_builder.ui.unsaved_changes import UnsavedChanges
+from scheme_builder.ui.usage_status import apply_usage_marks
+from scheme_builder.template import load_templates
 from scheme_builder.config import (
     CATALOG_LIST_WIDTH,
     DEFAULT_QUERY_INTERVAL,
@@ -51,6 +54,9 @@ class MetricEditor(QWidget):
         self.metric_list.setObjectName("metricList")
         self.new_button = QPushButton("Создать метрику", list_panel)
         self.new_button.setObjectName("newMetricButton")
+        self.duplicate_button = QPushButton("Дублировать", list_panel)
+        self.duplicate_button.setObjectName("duplicateMetricButton")
+        self.duplicate_button.setEnabled(False)
         self.sort_button = QPushButton("Сортировать по metric_id", list_panel)
         self.sort_button.setObjectName("sortMetricsButton")
         self.sort_button.setCheckable(True)
@@ -59,6 +65,7 @@ class MetricEditor(QWidget):
         self.delete_button.setEnabled(False)
         list_layout.addWidget(self.metric_list)
         list_layout.addWidget(self.new_button)
+        list_layout.addWidget(self.duplicate_button)
         list_layout.addWidget(self.sort_button)
         list_layout.addWidget(self.delete_button)
 
@@ -126,19 +133,70 @@ class MetricEditor(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(splitter)
 
-        self.new_button.clicked.connect(self._new_metric)
+        self.unsaved = UnsavedChanges(
+            self,
+            [self.metric_id_edit, self.name_edit, self.description_edit,
+             self.type_combo, self.dimension_combo, self.is_config_check,
+             self.err_thr_min_edit, self.err_thr_max_edit, self.query_interval_spin],
+            lambda: None, self._save_metric, self._reset_draft,
+        )
+        self.new_button.clicked.connect(lambda: self.unsaved.run(self._new_metric))
+        self.duplicate_button.clicked.connect(
+            lambda: self.unsaved.run(self._duplicate_metric)
+        )
         self.sort_button.toggled.connect(self._sort_metrics)
-        self.delete_button.clicked.connect(self._delete_selected_metric)
-        self.save_button.clicked.connect(self._save_metric)
+        self.delete_button.clicked.connect(
+            lambda: self.unsaved.run(self._delete_selected_metric)
+        )
+        self.save_button.clicked.connect(self.unsaved.save_changes)
         self.metric_list.currentItemChanged.connect(self._selection_changed)
+        self.metric_list.currentItemChanged.connect(
+            lambda: self.duplicate_button.setEnabled(
+                self._selected_metric_id() is not None
+            )
+        )
         self.type_combo.currentTextChanged.connect(self._update_type_fields)
 
         self._reload_metrics()
         if self.metric_list.count() == 0:
             self._new_metric()
 
+    def refresh_usage(self) -> None:
+        used_ids = {
+            metric_id
+            for template in load_templates(self.project_path)
+            for metric_id in template.get("metrics", [])
+        }
+        apply_usage_marks(self.metric_list, used_ids)
+
+    def _duplicate_metric(self) -> None:
+        metric_id = self._selected_metric_id()
+        if metric_id is None:
+            return
+        metrics = {metric["metric_id"]: metric for metric in load_metrics(self.project_path)}
+        if metric_id not in metrics:
+            raise InvalidMetricError(f"Метрика '{metric_id}' не найдена.")
+        duplicate = dict(metrics[metric_id])
+        copy_id = metric_id + "_copy"
+        while copy_id in metrics:
+            copy_id += "_copy"
+        duplicate["metric_id"] = copy_id
+        duplicate["name"] += "_copy"
+        save_metric(self.project_path, duplicate)
+        self._reload_metrics(copy_id)
+
+    def _reset_draft(self) -> None:
+        metric_id = self._selected_metric_id()
+        if metric_id is None:
+            self._new_metric()
+        else:
+            self._load_selected_metric(metric_id)
+
     def _new_metric(self) -> None:
-        self.metric_list.setCurrentRow(-1)
+        with QSignalBlocker(self.metric_list):
+            self.metric_list.setCurrentRow(-1)
+        self.duplicate_button.setEnabled(False)
+        self.delete_button.setEnabled(False)
         self.metric_id_edit.setEnabled(True)
         self.metric_id_edit.clear()
         self.name_edit.clear()
@@ -151,16 +209,19 @@ class MetricEditor(QWidget):
         self.query_interval_spin.setValue(DEFAULT_QUERY_INTERVAL)
         self._update_type_fields(self.type_combo.currentText())
         self.metric_id_edit.setFocus()
+        self.unsaved.mark_clean()
 
-    def _save_metric(self) -> None:
+    def _save_metric(self) -> bool:
         try:
             metric = self._collect_metric()
             save_metric(self.project_path, metric)
         except (InvalidMetricError, ValueError) as error:
             QMessageBox.warning(self, "Не удалось сохранить метрику", str(error))
-            return
+            return False
 
+        self.unsaved.mark_clean()
         self._reload_metrics(selected_metric_id=str(metric["metric_id"]))
+        return True
 
     def _collect_metric(self) -> dict[str, object]:
         metric_id = self.metric_id_edit.text().strip()
@@ -225,6 +286,7 @@ class MetricEditor(QWidget):
             item.setToolTip(metric_id)
             self.metric_list.addItem(item)
         apply_metric_group_stripes(self.metric_list)
+        self.refresh_usage()
 
         selected_item = None
         if selected_metric_id is not None:
@@ -244,15 +306,16 @@ class MetricEditor(QWidget):
         current_item: QListWidgetItem | None,
         previous_item: QListWidgetItem | None,
     ) -> None:
-        del previous_item
-        self.delete_button.setEnabled(current_item is not None)
-        if current_item is not None:
-            metric_id = str(current_item.data(Qt.ItemDataRole.UserRole))
-            if metric_id in self.metrics:
-                self._load_selected_metric(metric_id)
+        self.unsaved.select(
+            self.metric_list, current_item, previous_item, self._load_selected_metric
+        )
 
     def _sort_metrics(self) -> None:
-        self._reload_metrics(self._selected_metric_id())
+        if not self.unsaved.run(
+            lambda: self._reload_metrics(self._selected_metric_id())
+        ):
+            with QSignalBlocker(self.sort_button):
+                self.sort_button.setChecked(not self.sort_button.isChecked())
 
     def _delete_selected_metric(self) -> None:
         metric_id = self._selected_metric_id()
@@ -307,6 +370,7 @@ class MetricEditor(QWidget):
         self.err_thr_max_edit.setText(self._optional_number(metric.get("err_thr_max")))
         self.query_interval_spin.setValue(int(metric["query_interval"]))
         self._update_type_fields(self.type_combo.currentText())
+        self.unsaved.mark_clean()
 
     def _update_type_fields(self, metric_type: str) -> None:
         dimension_is_fixed = metric_type in ("string", "state")

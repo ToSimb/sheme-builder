@@ -26,11 +26,23 @@ MINIMUM_WINDOW_SIZE = QSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
 DEFAULT_PROJECTS_DIRECTORY = Path(__file__).resolve().parents[2] / "complexes"
 
 
+class MainWindow(QMainWindow):
+    def confirm_leave(self) -> bool:
+        workspace = self.centralWidget()
+        return not isinstance(workspace, ProjectWorkspace) or workspace.confirm_leave()
+
+    def closeEvent(self, event) -> None:
+        if self.confirm_leave():
+            super().closeEvent(event)
+        else:
+            event.ignore()
+
+
 def create_main_window(projects_directory: Path | None = None) -> QMainWindow:
     if projects_directory is None:
         projects_directory = DEFAULT_PROJECTS_DIRECTORY
 
-    window = QMainWindow()
+    window = MainWindow()
     window.setWindowTitle("Scheme Builder")
     window.resize(DEFAULT_WINDOW_SIZE)
     window.setMinimumSize(MINIMUM_WINDOW_SIZE)
@@ -68,9 +80,11 @@ def create_main_window(projects_directory: Path | None = None) -> QMainWindow:
 
 
 def _show_create_project_dialog(
-    window: QMainWindow,
+    window: MainWindow,
     projects_directory: Path,
 ) -> None:
+    if not window.confirm_leave():
+        return
     dialog = CreateProjectDialog(projects_directory, window)
     if dialog.exec() != QDialog.DialogCode.Accepted:
         return
@@ -84,9 +98,11 @@ def _show_create_project_dialog(
 
 
 def _show_open_project_dialog(
-    window: QMainWindow,
+    window: MainWindow,
     projects_directory: Path,
 ) -> None:
+    if not window.confirm_leave():
+        return
     selected_directory = QFileDialog.getExistingDirectory(
         window,
         "Открыть комплекс",

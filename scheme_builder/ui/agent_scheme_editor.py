@@ -3,8 +3,10 @@ from pathlib import Path
 from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtWidgets import (
     QComboBox,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -24,6 +26,7 @@ from scheme_builder.agent_scheme import (
     InvalidAgentSchemeError,
     build_agent_tree,
     delete_agent_scheme,
+    export_agent_scheme,
     load_agent_schemes,
     save_agent_scheme,
 )
@@ -59,9 +62,13 @@ class AgentSchemeEditor(QWidget):
         self.delete_button = QPushButton("Удалить AgentScheme", list_panel)
         self.delete_button.setObjectName("deleteAgentSchemeButton")
         self.delete_button.setEnabled(False)
+        self.export_button = QPushButton("Экспорт AgentScheme…", list_panel)
+        self.export_button.setObjectName("exportAgentSchemeButton")
+        self.export_button.setEnabled(False)
         list_layout.addWidget(self.agent_scheme_list)
         list_layout.addWidget(self.new_button)
         list_layout.addWidget(self.sort_button)
+        list_layout.addWidget(self.export_button)
         list_layout.addWidget(self.delete_button)
 
         editor_panel = QWidget(splitter)
@@ -145,6 +152,9 @@ class AgentSchemeEditor(QWidget):
             lambda: self.unsaved.run(self._delete_selected_agent_scheme)
         )
         self.save_button.clicked.connect(self.unsaved.save_changes)
+        self.export_button.clicked.connect(
+            lambda: self.unsaved.run(self._export_agent_scheme)
+        )
         self.agent_scheme_list.currentItemChanged.connect(
             self._selection_changed
         )
@@ -174,6 +184,7 @@ class AgentSchemeEditor(QWidget):
         with QSignalBlocker(self.agent_scheme_list):
             self.agent_scheme_list.setCurrentRow(-1)
         self.delete_button.setEnabled(False)
+        self.export_button.setEnabled(False)
         self.agent_scheme_id_edit.setEnabled(True)
         self.agent_scheme_id_edit.clear()
         self.name_edit.clear()
@@ -201,6 +212,30 @@ class AgentSchemeEditor(QWidget):
             selected_agent_scheme_id=str(agent_scheme["agent_scheme_id"])
         )
         return True
+
+    def _export_agent_scheme(self) -> None:
+        agent_scheme_id = self._selected_agent_scheme_id()
+        if agent_scheme_id is None:
+            return
+        revision, accepted = QInputDialog.getInt(
+            self, "Экспорт AgentScheme", "Ревизия схемы:", 1, 1, 2_147_483_647,
+        )
+        if not accepted:
+            return
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Экспорт AgentScheme",
+            str(self.project_path / f"{agent_scheme_id}.agent.json"),
+            "JSON (*.json)",
+        )
+        if not filename:
+            return
+        destination = export_agent_scheme(
+            self.project_path, self.agent_schemes[agent_scheme_id],
+            Path(filename), revision,
+        )
+        QMessageBox.information(
+            self, "AgentScheme экспортирована", f"Файл сохранён:\n{destination}",
+        )
 
     def _collect_agent_scheme(self) -> dict[str, object]:
         name = self.name_edit.text().strip()
@@ -255,6 +290,7 @@ class AgentSchemeEditor(QWidget):
         del signal_blocker
 
         self.delete_button.setEnabled(False)
+        self.export_button.setEnabled(False)
         if selected_item is not None:
             self.agent_scheme_list.setCurrentItem(selected_item)
         else:
@@ -272,6 +308,7 @@ class AgentSchemeEditor(QWidget):
 
     def _load_selected_agent_scheme(self, agent_scheme_id: str) -> None:
         agent_scheme = self.agent_schemes[agent_scheme_id]
+        self.export_button.setEnabled(True)
         self.agent_scheme_id_edit.setText(agent_scheme_id)
         self.agent_scheme_id_edit.setEnabled(False)
         self.name_edit.setText(str(agent_scheme["name"]))

@@ -1,7 +1,9 @@
 import json
 import re
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
+from scheme_builder.metric import load_metrics
 from scheme_builder.template import load_templates
 
 AGENT_SCHEME_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.]+$")
@@ -264,3 +266,80 @@ def build_agent_lists(
         "item_info_list": [],
         "join_id_list": join_id_list,
     }
+
+
+def build_agent_document(
+    project_path: Path,
+    agent_scheme: dict[str, object],
+    scheme_revision: int = 1,
+) -> dict[str, object]:
+    normalized = _validate_agent_scheme(agent_scheme)
+    if type(scheme_revision) is not int or scheme_revision < 1:
+        raise InvalidAgentSchemeError("Ревизия должна быть целым числом больше нуля.")
+    templates = {
+        template["template_id"]: template for template in load_templates(project_path)
+    }
+    metrics = {metric["metric_id"]: metric for metric in load_metrics(project_path)}
+    used_templates: dict[str, dict[str, object]] = {}
+    used_metrics: dict[str, dict[str, object]] = {}
+    pending = [root["template_id"] for root in normalized["roots"]]
+    while pending:
+        template_id = pending.pop(0)
+        if template_id in used_templates:
+            continue
+        if template_id not in templates:
+            raise InvalidAgentSchemeError(
+                f"Нельзя экспортировать: шаблон '{template_id}' не найден."
+            )
+        template = templates[template_id]
+        used_templates[template_id] = template
+        for metric_id in template.get("metrics", []):
+            if metric_id not in metrics:
+                raise InvalidAgentSchemeError(
+                    f"Нельзя экспортировать: метрика '{metric_id}' "
+                    f"шаблона '{template_id}' не найдена."
+                )
+            used_metrics[metric_id] = metrics[metric_id]
+        pending.extend(include["template_id"] for include in template.get("includes", []))
+    return {
+        "scheme_revision": scheme_revision,
+        "scheme": {
+            "metrics": list(used_metrics.values()),
+            "templates": list(used_templates.values()),
+            **build_agent_lists(project_path, normalized),
+        },
+    }
+
+
+def export_agent_scheme(
+    project_path: Path,
+    agent_scheme: dict[str, object],
+    destination: Path,
+    scheme_revision: int = 1,
+) -> Path:
+    document = build_agent_document(project_path, agent_scheme, scheme_revision)
+    temporary_file = None
+    try:
+        protected_files = {
+            (project_path / name).resolve()
+            for name in ("project.json", "metrics.json", "templates.json", AGENT_SCHEMES_FILE_NAME)
+        }
+        if destination.resolve() in protected_files:
+            raise InvalidAgentSchemeError("Экспорт не должен заменять файлы комплекса.")
+        with NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=destination.parent,
+            prefix=".agent-export-", suffix=".tmp", delete=False,
+        ) as stream:
+            temporary_file = Path(stream.name)
+            json.dump(document, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+        temporary_file.replace(destination)
+    except (OSError, UnicodeError) as error:
+        raise InvalidAgentSchemeError("Не удалось записать файл экспорта AgentScheme.") from error
+    finally:
+        if temporary_file is not None:
+            try:
+                temporary_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return destination

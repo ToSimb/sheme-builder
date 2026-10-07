@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from scheme_builder.ui.agent_scheme_editor import AgentSchemeEditor
+from scheme_builder.ui.join_scheme_editor import JoinSchemeEditor
 from scheme_builder.ui.metric_editor import MetricEditor
 from scheme_builder.ui.template_editor import TemplateEditor
 from scheme_builder.ui.unsaved_changes import EDITOR_ERRORS
@@ -30,12 +31,14 @@ class ProjectWorkspace(QWidget):
         self.metric_editor = MetricEditor(project_path, self)
         self.template_editor = TemplateEditor(project_path, self)
         self.agent_scheme_editor = AgentSchemeEditor(project_path, self)
+        self.join_scheme_editor = JoinSchemeEditor(project_path, self)
 
         self.tabs = QTabWidget(self)
         self.tabs.setObjectName("projectTabs")
         self.tabs.addTab(self.metric_editor, "Метрики")
         self.tabs.addTab(self.template_editor, "Шаблоны")
         self.tabs.addTab(self.agent_scheme_editor, "AgentScheme")
+        self.tabs.addTab(self.join_scheme_editor, "JoinScheme")
         self._active_tab = self.tabs.currentIndex()
         self.tabs.currentChanged.connect(self._refresh_current_tab)
 
@@ -60,6 +63,8 @@ class ProjectWorkspace(QWidget):
                 self.template_editor.refresh()
             elif index == 2:
                 self.agent_scheme_editor.refresh()
+            elif index == 3:
+                self.join_scheme_editor.refresh()
         except EDITOR_ERRORS as error:
             QMessageBox.warning(self, "Не удалось обновить вкладку", str(error))
             return

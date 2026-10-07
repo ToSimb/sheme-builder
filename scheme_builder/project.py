@@ -6,6 +6,7 @@ from scheme_builder.agent_scheme import (
     load_agent_schemes,
 )
 from scheme_builder.metric import InvalidMetricError, load_metrics
+from scheme_builder.join_scheme import InvalidJoinSchemeError, load_join_scheme
 from scheme_builder.template import InvalidTemplateError, load_templates
 
 
@@ -96,8 +97,10 @@ def open_project(project_path: Path) -> dict[str, int | str]:
         load_metrics(project_path)
         load_templates(project_path)
         load_agent_schemes(project_path)
+        load_join_scheme(project_path)
     except (
         InvalidAgentSchemeError,
+        InvalidJoinSchemeError,
         InvalidMetricError,
         InvalidTemplateError,
     ) as error:

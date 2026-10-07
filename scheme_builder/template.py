@@ -205,6 +205,7 @@ def delete_template(project_path: Path, template_id: str) -> Path:
         InvalidAgentSchemeError,
         load_agent_schemes,
     )
+    from scheme_builder.join_scheme import InvalidJoinSchemeError, load_join_scheme
 
     templates = load_templates(project_path)
     if not any(template["template_id"] == template_id for template in templates):
@@ -231,6 +232,13 @@ def delete_template(project_path: Path, template_id: str) -> Path:
                 f"Шаблон используется в AgentScheme "
                 f"'{agent_scheme['agent_scheme_id']}' и не может быть удалён."
             )
+
+    try:
+        join_scheme = load_join_scheme(project_path)
+    except InvalidJoinSchemeError as error:
+        raise InvalidTemplateError(str(error)) from error
+    if join_scheme is not None and join_scheme["root_template_id"] == template_id:
+        raise InvalidTemplateError("Шаблон используется в JoinScheme и не может быть удалён.")
 
     remaining_templates = [
         template for template in templates if template["template_id"] != template_id

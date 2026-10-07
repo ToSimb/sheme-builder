@@ -172,6 +172,8 @@ def save_agent_scheme(
 
 
 def delete_agent_scheme(project_path: Path, agent_scheme_id: str) -> Path:
+    from scheme_builder.join_scheme import InvalidJoinSchemeError, load_join_scheme
+
     agent_schemes = load_agent_schemes(project_path)
     if not any(
         agent_scheme["agent_scheme_id"] == agent_scheme_id
@@ -179,6 +181,17 @@ def delete_agent_scheme(project_path: Path, agent_scheme_id: str) -> Path:
     ):
         raise InvalidAgentSchemeError(
             f"AgentScheme '{agent_scheme_id}' не найдена."
+        )
+    try:
+        join_scheme = load_join_scheme(project_path)
+    except InvalidJoinSchemeError as error:
+        raise InvalidAgentSchemeError(str(error)) from error
+    if join_scheme is not None and any(
+        agent["agent_scheme_id"] == agent_scheme_id
+        for agent in join_scheme.get("agents", [])
+    ):
+        raise InvalidAgentSchemeError(
+            "AgentScheme используется в JoinScheme и не может быть удалена."
         )
     remaining_schemes = [
         agent_scheme
@@ -322,7 +335,10 @@ def export_agent_scheme(
     try:
         protected_files = {
             (project_path / name).resolve()
-            for name in ("project.json", "metrics.json", "templates.json", AGENT_SCHEMES_FILE_NAME)
+            for name in (
+                "project.json", "metrics.json", "templates.json",
+                AGENT_SCHEMES_FILE_NAME, "join_scheme.json",
+            )
         }
         if destination.resolve() in protected_files:
             raise InvalidAgentSchemeError("Экспорт не должен заменять файлы комплекса.")

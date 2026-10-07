@@ -25,6 +25,7 @@ from scheme_builder.config import (
     TEMPLATE_METRIC_LIST_MIN_HEIGHT,
 )
 from scheme_builder.metric import InvalidMetricError, load_metrics
+from scheme_builder.join_scheme import load_join_scheme
 from scheme_builder.template import (
     InvalidTemplateError,
     delete_template,
@@ -270,6 +271,9 @@ class TemplateEditor(QWidget):
             for agent in load_agent_schemes(self.project_path)
             for root in agent["roots"]
         )
+        join_scheme = load_join_scheme(self.project_path)
+        if join_scheme is not None:
+            used_ids.add(join_scheme["root_template_id"])
         signal_blocker = QSignalBlocker(self.template_list)
         self.template_list.clear()
         template_ids = list(self.templates)

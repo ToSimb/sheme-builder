@@ -11,10 +11,13 @@ from PySide6.QtWidgets import (
 )
 
 from scheme_builder.agent_scheme import InvalidAgentSchemeError
+from scheme_builder.join_scheme import InvalidJoinSchemeError
 from scheme_builder.metric import InvalidMetricError
 from scheme_builder.template import InvalidTemplateError
 
-EDITOR_ERRORS = (InvalidMetricError, InvalidTemplateError, InvalidAgentSchemeError)
+EDITOR_ERRORS = (
+    InvalidMetricError, InvalidTemplateError, InvalidAgentSchemeError, InvalidJoinSchemeError,
+)
 
 
 class UnsavedChanges:

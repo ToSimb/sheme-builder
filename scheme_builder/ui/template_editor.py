@@ -124,7 +124,9 @@ class TemplateEditor(QWidget):
         form_layout.addLayout(fields_layout)
         form_layout.addWidget(QLabel("Метрики шаблона:"))
         form_layout.addWidget(self.metric_list)
-        form_layout.addWidget(QLabel("Дочерние шаблоны:"))
+        form_layout.addWidget(QLabel(
+            "Дочерние шаблоны (галочка — точка подключения агента):"
+        ))
         form_layout.addLayout(include_controls)
         form_layout.addWidget(self.include_list)
         form_layout.addWidget(self.remove_include_button)
@@ -171,6 +173,7 @@ class TemplateEditor(QWidget):
                 current is not None
             )
         )
+        self.include_list.itemChanged.connect(self._include_target_changed)
 
         self._reload_templates()
         if self.template_list.count() == 0:
@@ -374,6 +377,7 @@ class TemplateEditor(QWidget):
         )
 
     def _reload_include_list(self) -> None:
+        signal_blocker = QSignalBlocker(self.include_list)
         self.include_list.clear()
         for include in self.includes:
             template_id = str(include["template_id"])
@@ -386,8 +390,26 @@ class TemplateEditor(QWidget):
                 item.setForeground(MISSING_REFERENCE_BRUSH)
                 item.setToolTip("Шаблон не найден в текущем комплексе")
             item.setData(Qt.ItemDataRole.UserRole, template_id)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(
+                Qt.CheckState.Checked
+                if include.get("join_target", False)
+                else Qt.CheckState.Unchecked
+            )
             self.include_list.addItem(item)
+        del signal_blocker
         self.remove_include_button.setEnabled(False)
+
+    def _include_target_changed(self, item: QListWidgetItem) -> None:
+        template_id = str(item.data(Qt.ItemDataRole.UserRole))
+        for include in self.includes:
+            if include["template_id"] != template_id:
+                continue
+            if item.checkState() == Qt.CheckState.Checked:
+                include["join_target"] = True
+            else:
+                include.pop("join_target", None)
+            break
 
     def _add_include(self) -> None:
         template_id = self.include_template_combo.currentData()

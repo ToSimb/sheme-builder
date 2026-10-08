@@ -1,6 +1,7 @@
 """Единственный редактируемый черновик JoinScheme комплекса."""
 
 import json
+from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -8,9 +9,12 @@ from tempfile import NamedTemporaryFile
 from scheme_builder.agent_scheme import (
     AGENT_SCHEME_ID_PATTERN, InvalidAgentSchemeError, build_agent_tree, load_agent_schemes,
 )
-from scheme_builder.template import TEMPLATE_ID_PATTERN, load_templates
+from scheme_builder.template import (
+    TEMPLATE_ID_PATTERN, load_templates, template_for_transport,
+)
 
 JOIN_SCHEME_FILE_NAME = "join_scheme.json"
+AUTO_ASSIGN_SEARCH_LIMIT = 100_000
 
 
 class InvalidJoinSchemeError(ValueError):
@@ -32,16 +36,17 @@ def _validate_join_scheme(join_scheme: dict[str, object]) -> dict[str, object]:
     agents = join_scheme.get("agents", [])
     if not isinstance(agents, list):
         raise InvalidJoinSchemeError("agents должен быть списком.")
-    reg_ids = set()
     for agent in agents:
         if not isinstance(agent, dict) or set(agent) != {"agent_reg_id", "agent_scheme_id", "joins"}:
             raise InvalidJoinSchemeError("Агент должен содержать agent_reg_id, agent_scheme_id, joins.")
         reg_id = agent["agent_reg_id"]
-        if not isinstance(reg_id, str) or not reg_id.strip() or reg_id in reg_ids:
-            raise InvalidJoinSchemeError("agent_reg_id должен быть непустым и уникальным.")
-        reg_ids.add(reg_id)
+        if not isinstance(reg_id, str):
+            raise InvalidJoinSchemeError("agent_reg_id должен быть строкой.")
         scheme_id = agent["agent_scheme_id"]
-        if not isinstance(scheme_id, str) or not AGENT_SCHEME_ID_PATTERN.fullmatch(scheme_id):
+        if (
+            not isinstance(scheme_id, str)
+            or (scheme_id and not AGENT_SCHEME_ID_PATTERN.fullmatch(scheme_id))
+        ):
             raise InvalidJoinSchemeError("Выберите корректный agent_scheme_id.")
         if not isinstance(agent["joins"], list):
             raise InvalidJoinSchemeError("joins должен быть списком.")
@@ -132,6 +137,10 @@ def build_join_tree(project_path: Path, join_scheme: dict[str, object]) -> dict[
         raise InvalidJoinSchemeError(str(error)) from error
 
     agent_root_template_ids = _agent_root_template_ids(project_path, normalized)
+    all_nodes = [root]
+    for node in all_nodes:
+        all_nodes.extend(node["children"])
+    has_marked_targets = any(node["join_target"] for node in all_nodes)
     root_prefix = f"{template_id}[0]"
     pending = [root]
     while pending:
@@ -140,10 +149,215 @@ def build_join_tree(project_path: Path, join_scheme: dict[str, object]) -> dict[
         if full_path == root_prefix or full_path.startswith(root_prefix + "/"):
             node["full_path"] = template_id + full_path[len(root_prefix):]
         node.pop("join_id", None)
-        if node is not root and node["template_id"] in agent_root_template_ids:
+        if node is not root and (
+            node["join_target"]
+            or (
+                not has_marked_targets
+                and node["template_id"] in agent_root_template_ids
+            )
+        ):
             node["children"] = []
         pending.extend(node["children"])
     return root
+
+
+def _manual_join_messages(
+    project_path: Path,
+    join_scheme: dict[str, object],
+) -> list[str]:
+    markers = (
+        "путь назначения не найден",
+        "не является точкой подключения",
+        "неверный шаблон назначения",
+        "повторное назначение пути",
+        "изменился корень",
+        "корень не найден",
+        "шаблон корня",
+        "один join_id назначен несколько раз",
+    )
+    return [
+        "Ручное подключение сохранено: " + issue
+        for issue in join_scheme_binding_issues(project_path, join_scheme)
+        if any(marker in issue for marker in markers)
+    ]
+
+
+def auto_assign_join_scheme(
+    project_path: Path,
+    join_scheme: dict[str, object],
+) -> tuple[dict[str, object], list[str]]:
+    """Дополнить черновик однозначными агентами и привязками."""
+    result = _validate_join_scheme(join_scheme)
+    result.setdefault("agents", [])
+    definitions = {
+        item["agent_scheme_id"]: item
+        for item in load_agent_schemes(project_path)
+    }
+
+    nodes = [build_join_tree(project_path, result)]
+    for node in nodes:
+        nodes.extend(node["children"])
+    targets = [node for node in nodes if node["join_target"] and not node["missing"]]
+    if not targets:
+        messages = ["В шаблонах комплекса нет точек подключения join_target."]
+        messages.extend(_manual_join_messages(project_path, result))
+        return result, messages
+
+    target_counts = Counter(str(node["template_id"]) for node in targets)
+    remaining_counts = target_counts.copy()
+    for agent in result["agents"]:
+        definition = definitions.get(agent["agent_scheme_id"])
+        if definition is None:
+            continue
+        for root in build_agent_tree(project_path, definition):
+            remaining_counts[str(root["template_id"])] -= 1
+
+    messages: list[str] = []
+    if any(count < 0 for count in remaining_counts.values()):
+        messages.append("Созданные агенты требуют больше точек, чем есть в JoinScheme.")
+    else:
+        candidates = []
+        for definition in definitions.values():
+            roots = build_agent_tree(project_path, definition)
+            requirements = Counter(str(root["template_id"]) for root in roots)
+            if requirements and set(requirements) <= set(target_counts):
+                candidates.append((definition, requirements))
+
+        template_ids = sorted(target_counts, key=str.casefold)
+        goal = tuple(remaining_counts[template_id] for template_id in template_ids)
+        states: dict[tuple[int, ...], list[list[int]]] = {
+            tuple(0 for _ in template_ids): [[]]
+        }
+        transitions = 0
+        search_limited = False
+        for _definition, requirements in candidates:
+            requirement = tuple(
+                requirements[template_id] for template_id in template_ids
+            )
+            next_states: dict[tuple[int, ...], list[list[int]]] = {}
+            for state, partial_solutions in states.items():
+                maximum = min(
+                    (goal[index] - state[index]) // count
+                    for index, count in enumerate(requirement)
+                    if count
+                )
+                for amount in range(maximum + 1):
+                    transitions += 1
+                    if transitions > AUTO_ASSIGN_SEARCH_LIMIT:
+                        search_limited = True
+                        break
+                    updated = tuple(
+                        state[index] + count * amount
+                        for index, count in enumerate(requirement)
+                    )
+                    state_solutions = next_states.setdefault(updated, [])
+                    for partial in partial_solutions:
+                        if len(state_solutions) >= 2:
+                            break
+                        state_solutions.append(partial + [amount])
+                if search_limited:
+                    break
+            if search_limited:
+                break
+            states = next_states
+
+        solutions = [] if search_limited else states.get(goal, [])
+        if search_limited:
+            messages.append(
+                "Слишком много вариантов состава агентов; уточните AgentScheme вручную."
+            )
+        elif len(solutions) == 1:
+            for (definition, _requirements), amount in zip(candidates, solutions[0]):
+                for _ in range(amount):
+                    result["agents"].append({
+                        "agent_reg_id": "",
+                        "agent_scheme_id": definition["agent_scheme_id"],
+                        "joins": [],
+                    })
+        elif not solutions:
+            messages.append("Набор AgentScheme не покрывает свободные точки подключения.")
+        else:
+            messages.append("Найдено несколько вариантов состава агентов.")
+
+    occupied = {
+        join["join_item_full_path"]
+        for agent in result["agents"]
+        for join in agent["joins"]
+    }
+    free_targets = {
+        str(node["full_path"]): node
+        for node in targets
+        if node["full_path"] not in occupied
+    }
+    pending = []
+    for agent in result["agents"]:
+        definition = definitions.get(agent["agent_scheme_id"])
+        if definition is None:
+            continue
+        joined_ids = {join["agent_item_join_id"] for join in agent["joins"]}
+        for root in build_agent_tree(project_path, definition):
+            if root["join_id"] not in joined_ids:
+                pending.append((agent, root))
+
+    def assign(source, path: str) -> None:
+        agent, root = source
+        agent["joins"].append({
+            "agent_item_join_id": root["join_id"],
+            "agent_item_full_path": root["full_path"],
+            "join_item_full_path": path,
+        })
+        pending.remove(source)
+        del free_targets[path]
+
+    changed = True
+    while changed:
+        changed = False
+        for source in list(pending):
+            root = source[1]
+            choices = [
+                path for path, node in free_targets.items()
+                if node["template_id"] == root["template_id"]
+            ]
+            if len(choices) == 1:
+                assign(source, choices[0])
+                changed = True
+                break
+        if changed:
+            continue
+        for path, target in list(free_targets.items()):
+            choices = [
+                source for source in pending
+                if source[1]["template_id"] == target["template_id"]
+            ]
+            if len(choices) == 1:
+                assign(choices[0], path)
+                changed = True
+                break
+
+    for template_id in sorted(
+        {str(source[1]["template_id"]) for source in pending},
+        key=str.casefold,
+    ):
+        sources = [source for source in pending if source[1]["template_id"] == template_id]
+        paths = sorted(
+            (
+                path for path, node in free_targets.items()
+                if node["template_id"] == template_id
+            ),
+            key=str.casefold,
+        )
+        scheme_ids = {source[0]["agent_scheme_id"] for source in sources}
+        if len(scheme_ids) == 1 and len(sources) == len(paths):
+            for source, path in zip(list(sources), paths):
+                assign(source, path)
+        elif sources and paths:
+            messages.append(
+                f"{template_id}: выберите подключения вручную ({len(paths)} вариантов)."
+            )
+
+    messages.extend(_manual_join_messages(project_path, result))
+
+    return result, messages
 
 
 def join_scheme_binding_issues(project_path: Path, scheme: dict[str, object]) -> list[str]:
@@ -160,11 +374,26 @@ def join_scheme_binding_issues(project_path: Path, scheme: dict[str, object]) ->
         pending.extend(node["children"])
     definitions = {item["agent_scheme_id"]: item for item in load_agent_schemes(project_path)}
     used = {}
-    for agent in scheme.get("agents", []):
-        label = agent["agent_reg_id"]
+    marked_targets = {
+        path for path, node in destinations.items() if node["join_target"]
+    }
+    reg_ids: dict[str, str] = {}
+    for agent_index, agent in enumerate(scheme.get("agents", []), start=1):
+        reg_id = agent["agent_reg_id"].strip()
+        label = reg_id or f"Агент #{agent_index}"
+        if not reg_id:
+            issues.append(f"{label}: введите agent_reg_id.")
+        elif reg_id in reg_ids:
+            issues.append(
+                f"{label}: agent_reg_id повторяется (уже {reg_ids[reg_id]})."
+            )
+        else:
+            reg_ids[reg_id] = label
         definition = definitions.get(agent["agent_scheme_id"])
         roots = {}
-        if definition is None:
+        if not agent["agent_scheme_id"]:
+            issues.append(f"{label}: выберите AgentScheme.")
+        elif definition is None:
             issues.append(f"{label}: AgentScheme '{agent['agent_scheme_id']}' не найдена.")
         else:
             roots = {node["join_id"]: node for node in build_agent_tree(project_path, definition)}
@@ -186,12 +415,18 @@ def join_scheme_binding_issues(project_path: Path, scheme: dict[str, object]) ->
             destination = destinations.get(path)
             if destination is None:
                 issues.append(f"{prefix}: путь назначения не найден: {path}.")
+            elif marked_targets and not destination["join_target"]:
+                issues.append(
+                    f"{prefix}: {path} не является точкой подключения."
+                )
             elif root is not None and root["template_id"] != destination["template_id"]:
                 issues.append(f"{prefix}: неверный шаблон назначения {path}; нужен {root['template_id']}.")
             if path in used:
                 issues.append(f"{prefix}: повторное назначение пути {path} (уже {used[path]}).")
             else:
                 used[path] = prefix
+    for path in sorted(marked_targets - set(used), key=str.casefold):
+        issues.append(f"Точка подключения не занята: {path}.")
     return issues
 
 
@@ -216,6 +451,10 @@ def build_join_document(
     }
     agent_root_template_ids = _agent_root_template_ids(project_path, normalized)
     root = build_join_tree(project_path, normalized)
+    tree_nodes = [root]
+    for node in tree_nodes:
+        tree_nodes.extend(node["children"])
+    has_marked_targets = any(node["join_target"] for node in tree_nodes)
     used_templates: dict[str, dict[str, object]] = {}
     item_id_list: list[dict[str, object]] = []
     pending = [root]
@@ -227,8 +466,15 @@ def build_join_document(
             raise InvalidJoinSchemeError(
                 f"Нельзя экспортировать: шаблон '{template_id}' не найден."
             )
-        if node is root or template_id not in agent_root_template_ids:
-            used_templates.setdefault(template_id, template)
+        if (
+            node is root
+            or (has_marked_targets and not node["join_target"])
+            or (
+                not has_marked_targets
+                and template_id not in agent_root_template_ids
+            )
+        ):
+            used_templates.setdefault(template_id, template_for_transport(template))
         item_id_list.append({"full_path": node["full_path"], "item_id": None})
         pending[0:0] = node["children"]
 

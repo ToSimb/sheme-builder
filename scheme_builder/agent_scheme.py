@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from scheme_builder.metric import load_metrics
-from scheme_builder.template import load_templates
+from scheme_builder.template import load_templates, template_for_transport
 
 AGENT_SCHEME_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.]+$")
 AGENT_SCHEMES_FILE_NAME = "agent_schemes.json"
@@ -216,6 +216,7 @@ def build_agent_tree(
         template_id: str,
         index: int,
         parent_path: str | None,
+        join_target: bool = False,
     ) -> dict[str, object]:
         nonlocal item_count
         item_count += 1
@@ -232,12 +233,18 @@ def build_agent_tree(
                 child_template_id = str(include["template_id"])
                 for child_index in range(int(include["count"])):
                     children.append(
-                        build_node(child_template_id, child_index, full_path)
+                        build_node(
+                            child_template_id,
+                            child_index,
+                            full_path,
+                            bool(include.get("join_target", False)),
+                        )
                     )
         return {
             "children": children,
             "full_path": full_path,
             "index": index,
+            "join_target": join_target,
             "missing": template is None,
             "template_id": template_id,
         }
@@ -305,7 +312,7 @@ def build_agent_document(
                 f"Нельзя экспортировать: шаблон '{template_id}' не найден."
             )
         template = templates[template_id]
-        used_templates[template_id] = template
+        used_templates[template_id] = template_for_transport(template)
         for metric_id in template.get("metrics", []):
             if metric_id not in metrics:
                 raise InvalidAgentSchemeError(

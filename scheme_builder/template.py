@@ -5,7 +5,7 @@ from pathlib import Path
 TEMPLATE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.]+$")
 TEMPLATES_FILE_NAME = "templates.json"
 _TEMPLATE_FIELDS = {"template_id", "name", "description", "metrics", "includes"}
-_INCLUDE_FIELDS = {"count", "template_id"}
+_INCLUDE_FIELDS = {"count", "template_id", "join_target"}
 
 
 class InvalidTemplateError(ValueError):
@@ -57,12 +57,17 @@ def _validate_template_shape(template: dict[str, object]) -> dict[str, object]:
     if not isinstance(includes, list):
         raise InvalidTemplateError("Поле includes должно быть списком.")
 
-    normalized_includes: list[dict[str, int | str]] = []
+    normalized_includes: list[dict[str, bool | int | str]] = []
     included_ids: set[str] = set()
     for include in includes:
-        if not isinstance(include, dict) or set(include) != _INCLUDE_FIELDS:
+        if (
+            not isinstance(include, dict)
+            or set(include) - _INCLUDE_FIELDS
+            or not {"count", "template_id"}.issubset(include)
+        ):
             raise InvalidTemplateError(
-                "Каждое включение должно содержать только template_id и count."
+                "Каждое включение должно содержать template_id, count "
+                "и необязательный join_target."
             )
         included_template_id = include.get("template_id")
         count = include.get("count")
@@ -75,15 +80,21 @@ def _validate_template_shape(template: dict[str, object]) -> dict[str, object]:
             raise InvalidTemplateError(
                 "Количество включений должно быть целым числом больше нуля."
             )
+        join_target = include.get("join_target", False)
+        if type(join_target) is not bool:
+            raise InvalidTemplateError("join_target должен быть логическим значением.")
         if included_template_id in included_ids:
             raise InvalidTemplateError(
                 "Дочерний шаблон не должен повторяться в одном шаблоне."
             )
         included_ids.add(included_template_id)
-        normalized_includes.append({
+        normalized_include: dict[str, bool | int | str] = {
             "count": count,
             "template_id": included_template_id,
-        })
+        }
+        if join_target:
+            normalized_include["join_target"] = True
+        normalized_includes.append(normalized_include)
 
     if normalized_includes:
         normalized["includes"] = normalized_includes
@@ -91,6 +102,20 @@ def _validate_template_shape(template: dict[str, object]) -> dict[str, object]:
         normalized.pop("includes", None)
 
     return normalized
+
+
+def template_for_transport(template: dict[str, object]) -> dict[str, object]:
+    """Убрать локальные авторские поля, неизвестные формату pc_at."""
+    exported = dict(template)
+    if "includes" in exported:
+        exported["includes"] = [
+            {
+                "count": include["count"],
+                "template_id": include["template_id"],
+            }
+            for include in exported["includes"]
+        ]
+    return exported
 
 
 def _validate_template_catalog(

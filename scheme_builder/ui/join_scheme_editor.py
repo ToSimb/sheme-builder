@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from PySide6.QtCore import QSignalBlocker, Qt
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from scheme_builder.agent_scheme import build_agent_tree, load_agent_schemes
 from scheme_builder.join_scheme import (
+    auto_assign_join_scheme,
     build_join_tree,
     export_join_scheme,
     join_scheme_binding_issues,
@@ -31,6 +33,9 @@ from scheme_builder.join_scheme import (
 from scheme_builder.template import load_templates
 from scheme_builder.ui.reference_status import MISSING_REFERENCE_BRUSH
 from scheme_builder.ui.unsaved_changes import EDITOR_ERRORS, UnsavedChanges
+
+
+FREE_JOIN_TARGET_BRUSH = QBrush(QColor("#fff3cd"))
 
 
 class JoinSchemeEditor(QWidget):
@@ -78,8 +83,14 @@ class JoinSchemeEditor(QWidget):
         buttons = QHBoxLayout()
         self.add_agent_button = QPushButton("Добавить агента")
         self.remove_agent_button = QPushButton("Удалить агента")
+        self.auto_assign_button = QPushButton("Автосборка")
+        self.auto_assign_button.setObjectName("autoAssignJoinSchemeButton")
+        self.remove_all_agents_button = QPushButton("Удалить всех агентов")
+        self.remove_all_agents_button.setObjectName("removeAllJoinAgentsButton")
         buttons.addWidget(self.add_agent_button)
         buttons.addWidget(self.remove_agent_button)
+        buttons.addWidget(self.auto_assign_button)
+        buttons.addWidget(self.remove_all_agents_button)
 
         layout = QVBoxLayout(self)
         layout.addLayout(fields)
@@ -104,6 +115,8 @@ class JoinSchemeEditor(QWidget):
         self.agents_table.currentCellChanged.connect(self._reload_bindings)
         self.add_agent_button.clicked.connect(self._add_agent)
         self.remove_agent_button.clicked.connect(self._remove_agent)
+        self.auto_assign_button.clicked.connect(self._auto_assign)
+        self.remove_all_agents_button.clicked.connect(self._remove_all_agents)
         self.save_button.clicked.connect(self.unsaved.save_changes)
         self.export_button.clicked.connect(
             lambda: self.unsaved.run(self._export)
@@ -196,6 +209,42 @@ class JoinSchemeEditor(QWidget):
             self._render_agents(min(row, len(self.agents) - 1))
             self._reload_tree()
 
+    def _remove_all_agents(self):
+        if not self.agents:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Удалить всех агентов",
+            "Удалить всех агентов и их подключения из JoinScheme?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.agents = []
+        self._had_agents = True
+        self._render_agents(-1)
+        self._reload_tree()
+
+    def _auto_assign(self):
+        try:
+            scheme, messages = auto_assign_join_scheme(
+                self.project_path, self._draft(),
+            )
+        except EDITOR_ERRORS as error:
+            QMessageBox.warning(self, "Автосборка не выполнена", str(error))
+            return
+        self.agents = scheme.get("agents", [])
+        self._had_agents = True
+        self._render_agents(0 if self.agents else -1)
+        self._reload_tree()
+        if messages:
+            QMessageBox.warning(
+                self,
+                "Автосборка требует уточнения",
+                "\n".join(messages),
+            )
+
     def _render_agents(self, selected):
         # Permanent cell widgets update the draft on every keystroke, not focus loss.
         with QSignalBlocker(self.agents_table):
@@ -240,6 +289,22 @@ class JoinSchemeEditor(QWidget):
         self._reload_tree()
         self._reload_bindings()
 
+    def _occupancy(self, excluded_agent=None, excluded_join_id=None):
+        occupied = {}
+        for agent_index, agent in enumerate(self.agents, start=1):
+            label = agent["agent_reg_id"].strip() or f"Агент #{agent_index}"
+            for join in agent["joins"]:
+                if (
+                    agent is excluded_agent
+                    and join["agent_item_join_id"] == excluded_join_id
+                ):
+                    continue
+                path = join["join_item_full_path"]
+                occupied.setdefault(path, []).append(
+                    f"{label}, join_id={join['agent_item_join_id']}"
+                )
+        return occupied
+
     def _reload_bindings(self, *_args):
         self.bindings_table.setRowCount(0)
         row = self.agents_table.currentRow()
@@ -258,6 +323,7 @@ class JoinSchemeEditor(QWidget):
                     node = pending.pop()
                     destinations.append(node)
                     pending.extend(reversed(node["children"]))
+            has_marked_targets = any(node["join_target"] for node in destinations)
         except EDITOR_ERRORS as error:
             self.issues_label.setText(str(error))
             return
@@ -276,10 +342,22 @@ class JoinSchemeEditor(QWidget):
             self.bindings_table.setItem(row, 1, item)
             combo = QComboBox()
             combo.addItem("— Без привязки / удалить —", None)
+            occupied = self._occupancy(agent, join_id)
             if root and not root["missing"]:
                 for node in destinations:
-                    if not node["missing"] and node["template_id"] == root["template_id"]:
-                        combo.addItem(node["full_path"], node["full_path"])
+                    if (
+                        not node["missing"]
+                        and node["template_id"] == root["template_id"]
+                        and (not has_marked_targets or node["join_target"])
+                    ):
+                        destination_path = str(node["full_path"])
+                        users = occupied.get(destination_path, [])
+                        text = destination_path
+                        if users:
+                            text += f" (занято: {', '.join(users)})"
+                        combo.addItem(text, destination_path)
+                        if users:
+                            combo.model().item(combo.count() - 1).setEnabled(False)
             path = join["join_item_full_path"] if join else None
             index = combo.findData(path)
             if index < 0:
@@ -295,19 +373,32 @@ class JoinSchemeEditor(QWidget):
 
     def _bind(self, agent, join_id, root, path):
         if path is None:
-            agent["joins"] = [j for j in agent["joins"] if j["agent_item_join_id"] != join_id]
+            agent["joins"] = [
+                join for join in agent["joins"]
+                if join["agent_item_join_id"] != join_id
+            ]
         elif root:
             # An unavailable saved value is displayed for preservation, not a new choice.
             try:
-                pending = [build_join_tree(self.project_path, self._draft())]
-                valid = False
-                while pending:
-                    node = pending.pop()
-                    if node["full_path"] == path and node["template_id"] == root["template_id"] and not node["missing"] and not root["missing"]:
-                        valid = True
-                    pending.extend(node["children"])
+                nodes = [build_join_tree(self.project_path, self._draft())]
+                for node in nodes:
+                    nodes.extend(node["children"])
+                has_marked_targets = any(node["join_target"] for node in nodes)
+                valid = any(
+                    node["full_path"] == path
+                    and node["template_id"] == root["template_id"]
+                    and not node["missing"]
+                    and not root["missing"]
+                    and (not has_marked_targets or node["join_target"])
+                    for node in nodes
+                )
+                valid = valid and not self._occupancy(agent, join_id).get(path)
                 if valid:
-                    new_join = {"agent_item_join_id": join_id, "agent_item_full_path": root["full_path"], "join_item_full_path": path}
+                    new_join = {
+                        "agent_item_join_id": join_id,
+                        "agent_item_full_path": root["full_path"],
+                        "join_item_full_path": path,
+                    }
                     for index, old in enumerate(agent["joins"]):
                         if old["agent_item_join_id"] == join_id:
                             agent["joins"][index] = new_join
@@ -317,6 +408,7 @@ class JoinSchemeEditor(QWidget):
             except EDITOR_ERRORS as error:
                 self.issues_label.setText(str(error))
                 return
+        self._reload_tree()
         self._reload_bindings()
 
     def _reload_tree(self) -> None:
@@ -335,18 +427,43 @@ class JoinSchemeEditor(QWidget):
 
         count = 0
         missing = 0
+        targets = 0
+        occupied_targets = 0
+        conflicts = 0
+        occupied = self._occupancy()
 
         def add_node(node: dict[str, object], parent: QTreeWidgetItem | None) -> None:
-            nonlocal count, missing
+            nonlocal count, missing, targets, occupied_targets, conflicts
             count += 1
-            label = str(node["full_path"]).rsplit("/", 1)[-1]
-            item = QTreeWidgetItem([label, str(node["full_path"])])
+            path = str(node["full_path"])
+            label = path.rsplit("/", 1)[-1]
+            users = occupied.get(path, [])
+            if node["join_target"]:
+                targets += 1
+                if len(users) == 1:
+                    occupied_targets += 1
+                    label = f"✓ {label}"
+                elif len(users) > 1:
+                    conflicts += 1
+                    label = f"⚠ {label}"
+                elif not node["missing"]:
+                    label = f"○ {label}"
+            item = QTreeWidgetItem([label, path])
             item.setData(0, Qt.ItemDataRole.UserRole, node["full_path"])
+            if node["join_target"] and not users and not node["missing"]:
+                item.setBackground(0, FREE_JOIN_TARGET_BRUSH)
+                item.setBackground(1, FREE_JOIN_TARGET_BRUSH)
+                item.setToolTip(0, "Свободная точка подключения: назначьте агента")
             if node["missing"]:
                 missing += 1
                 item.setForeground(0, MISSING_REFERENCE_BRUSH)
                 item.setForeground(1, MISSING_REFERENCE_BRUSH)
                 item.setToolTip(0, "Шаблон не найден в текущем комплексе")
+            elif users:
+                item.setToolTip(0, "Занято: " + "; ".join(users))
+                if len(users) > 1:
+                    item.setForeground(0, MISSING_REFERENCE_BRUSH)
+                    item.setForeground(1, MISSING_REFERENCE_BRUSH)
             if parent is None:
                 self.tree.addTopLevelItem(item)
             else:
@@ -356,4 +473,7 @@ class JoinSchemeEditor(QWidget):
 
         add_node(root, None)
         self.tree.expandToDepth(1)
-        self.summary_label.setText(f"Узлов: {count} | Отсутствующих ссылок: {missing}")
+        self.summary_label.setText(
+            f"Узлов: {count} | Точек: {targets} | Занято: {occupied_targets} | "
+            f"Конфликтов: {conflicts} | Отсутствующих ссылок: {missing}"
+        )

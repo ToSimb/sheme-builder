@@ -1,11 +1,12 @@
+from collections import Counter
 from pathlib import Path
 
 from PySide6.QtCore import QSignalBlocker, Qt
-from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLineEdit,
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QLabel,
     QPushButton,
+    QSplitter,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -32,10 +34,19 @@ from scheme_builder.join_scheme import (
 )
 from scheme_builder.template import load_templates
 from scheme_builder.ui.reference_status import MISSING_REFERENCE_BRUSH
+from scheme_builder.ui.status_colors import (
+    DANGER_BRUSH,
+    DANGER_COLOR,
+    DANGER_TEXT_COLOR,
+    SUCCESS_BRUSH,
+    SUCCESS_COLOR,
+    SUCCESS_TEXT_COLOR,
+    WARNING_BRUSH,
+    WARNING_COLOR,
+    WARNING_TEXT_COLOR,
+    background_style,
+)
 from scheme_builder.ui.unsaved_changes import EDITOR_ERRORS, UnsavedChanges
-
-
-FREE_JOIN_TARGET_BRUSH = QBrush(QColor("#fff3cd"))
 
 
 class JoinSchemeEditor(QWidget):
@@ -49,6 +60,11 @@ class JoinSchemeEditor(QWidget):
 
         self.summary_label = QLabel("Выберите корневой шаблон.")
         self.summary_label.setObjectName("joinTreeSummaryLabel")
+        self.legend_label = QLabel(
+            "○ свободно (жёлтый)   ✓ подключено (зелёный)   "
+            "⚠ конфликт (красный)"
+        )
+        self.legend_label.setObjectName("joinTreeLegendLabel")
         self.tree = QTreeWidget()
         self.tree.setObjectName("joinTree")
         self.tree.setHeaderLabels(["Экземпляр", "full_path"])
@@ -78,19 +94,47 @@ class JoinSchemeEditor(QWidget):
         self.issues_label = QLabel()
         self.issues_label.setObjectName("joinBindingIssuesLabel")
         self.issues_label.setWordWrap(True)
-        self.issues_label.setStyleSheet("color: #c62828")
+        self.issues_label.setStyleSheet(f"color: {DANGER_TEXT_COLOR}")
         self.issues_label.setTextFormat(Qt.TextFormat.PlainText)
-        buttons = QHBoxLayout()
+        buttons = QGridLayout()
         self.add_agent_button = QPushButton("Добавить агента")
         self.remove_agent_button = QPushButton("Удалить агента")
         self.auto_assign_button = QPushButton("Автосборка")
         self.auto_assign_button.setObjectName("autoAssignJoinSchemeButton")
         self.remove_all_agents_button = QPushButton("Удалить всех агентов")
         self.remove_all_agents_button.setObjectName("removeAllJoinAgentsButton")
-        buttons.addWidget(self.add_agent_button)
-        buttons.addWidget(self.remove_agent_button)
-        buttons.addWidget(self.auto_assign_button)
-        buttons.addWidget(self.remove_all_agents_button)
+        buttons.addWidget(self.add_agent_button, 0, 0)
+        buttons.addWidget(self.remove_agent_button, 0, 1)
+        buttons.addWidget(self.auto_assign_button, 1, 0)
+        buttons.addWidget(self.remove_all_agents_button, 1, 1)
+
+        tree_panel = QWidget()
+        tree_layout = QVBoxLayout(tree_panel)
+        tree_layout.setContentsMargins(0, 0, 0, 0)
+        tree_layout.addWidget(self.summary_label)
+        tree_layout.addWidget(self.legend_label)
+        tree_layout.addWidget(self.tree, 1)
+
+        agents_panel = QWidget()
+        agents_layout = QVBoxLayout(agents_panel)
+        agents_layout.setContentsMargins(0, 0, 0, 0)
+        agents_layout.addWidget(QLabel("Агенты и подключения"))
+        agents_layout.addLayout(buttons)
+        agents_layout.addWidget(self.agents_table)
+        agents_layout.addWidget(self.bindings_table, 1)
+        agents_layout.addWidget(self.issues_label)
+        file_buttons = QHBoxLayout()
+        file_buttons.addWidget(self.save_button)
+        file_buttons.addWidget(self.export_button)
+        agents_layout.addLayout(file_buttons)
+
+        self.workspace_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.workspace_splitter.setObjectName("joinWorkspaceSplitter")
+        self.workspace_splitter.addWidget(tree_panel)
+        self.workspace_splitter.addWidget(agents_panel)
+        self.workspace_splitter.setStretchFactor(0, 3)
+        self.workspace_splitter.setStretchFactor(1, 2)
+        self.workspace_splitter.setSizes([650, 550])
 
         layout = QVBoxLayout(self)
         layout.addLayout(fields)
@@ -98,14 +142,7 @@ class JoinSchemeEditor(QWidget):
             "Привязки jtAssign: один AgentScheme можно использовать для нескольких агентов. "
             "Назначение — узел того же шаблона."
         ))
-        layout.addWidget(self.summary_label)
-        layout.addWidget(self.tree, 1)
-        layout.addLayout(buttons)
-        layout.addWidget(self.agents_table)
-        layout.addWidget(self.bindings_table)
-        layout.addWidget(self.issues_label)
-        layout.addWidget(self.save_button)
-        layout.addWidget(self.export_button)
+        layout.addWidget(self.workspace_splitter, 1)
 
         self.unsaved = UnsavedChanges(
             self, [], self._draft,
@@ -193,8 +230,33 @@ class JoinSchemeEditor(QWidget):
     def _update_issues(self):
         try:
             issues = join_scheme_binding_issues(self.project_path, self._draft())
-            self.issues_label.setText("\n".join(issues))
+            warning_markers = (
+                "введите agent_reg_id",
+                "выберите AgentScheme",
+                "отсутствует привязка",
+                "Точка подключения не занята",
+            )
+            errors = [
+                issue for issue in issues
+                if not any(marker in issue for marker in warning_markers)
+            ]
+            if errors:
+                self.issues_label.setStyleSheet(f"color: {DANGER_TEXT_COLOR}")
+                self.issues_label.setText(
+                    "Требуется исправить:\n" + "\n".join(issues)
+                )
+            elif issues:
+                self.issues_label.setStyleSheet(f"color: {WARNING_TEXT_COLOR}")
+                self.issues_label.setText(
+                    "Требуется заполнить:\n" + "\n".join(issues)
+                )
+            elif self.root_template_combo.currentData() is not None:
+                self.issues_label.setStyleSheet(f"color: {SUCCESS_TEXT_COLOR}")
+                self.issues_label.setText("✓ JoinScheme готова к экспорту.")
+            else:
+                self.issues_label.clear()
         except EDITOR_ERRORS as error:
+            self.issues_label.setStyleSheet(f"color: {DANGER_TEXT_COLOR}")
             self.issues_label.setText(str(error))
 
     def _add_agent(self):
@@ -266,8 +328,44 @@ class JoinSchemeEditor(QWidget):
                 combo.setCurrentIndex(index)
                 combo.currentIndexChanged.connect(lambda _index, a=agent, c=combo: self._agent_definition(a, c.currentData()))
                 self.agents_table.setCellWidget(row, 1, combo)
+            self._refresh_agent_statuses()
             self.agents_table.setCurrentCell(selected, 0)
         self._reload_bindings()
+
+    def _refresh_agent_statuses(self):
+        reg_ids = [str(agent["agent_reg_id"]).strip() for agent in self.agents]
+        duplicate_ids = {
+            reg_id for reg_id, count in Counter(reg_ids).items()
+            if reg_id and count > 1
+        }
+        definition_ids = {
+            str(definition["agent_scheme_id"])
+            for definition in self.definitions
+        }
+        for row, agent in enumerate(self.agents):
+            field = self.agents_table.cellWidget(row, 0)
+            reg_id = reg_ids[row]
+            if not reg_id:
+                field.setStyleSheet(background_style(WARNING_COLOR))
+                field.setToolTip("Введите уникальный agent_reg_id")
+            elif reg_id in duplicate_ids:
+                field.setStyleSheet(background_style(DANGER_COLOR))
+                field.setToolTip("agent_reg_id повторяется")
+            else:
+                field.setStyleSheet(background_style(None))
+                field.setToolTip("Уникальный agent_reg_id")
+
+            combo = self.agents_table.cellWidget(row, 1)
+            scheme_id = str(agent["agent_scheme_id"])
+            if not scheme_id:
+                combo.setStyleSheet(background_style(WARNING_COLOR))
+                combo.setToolTip("Выберите AgentScheme")
+            elif scheme_id not in definition_ids:
+                combo.setStyleSheet(background_style(DANGER_COLOR))
+                combo.setToolTip("AgentScheme не найдена")
+            else:
+                combo.setStyleSheet(background_style(None))
+                combo.setToolTip("AgentScheme выбрана")
 
     def _select_agent(self, agent):
         for row, candidate in enumerate(self.agents):
@@ -279,6 +377,7 @@ class JoinSchemeEditor(QWidget):
     def _agent_text(self, agent, text):
         agent["agent_reg_id"] = text
         self._select_agent(agent)
+        self._refresh_agent_statuses()
         self._reload_tree()
         self._reload_bindings()
 
@@ -286,22 +385,72 @@ class JoinSchemeEditor(QWidget):
         agent["agent_scheme_id"] = scheme_id
         self._select_agent(agent)
         # Existing joins are kept even when the selected definition changes.
+        self._refresh_agent_statuses()
         self._reload_tree()
         self._reload_bindings()
 
-    def _occupancy(self, excluded_agent=None, excluded_join_id=None):
+    def _occupancy(
+        self,
+        excluded_agent=None,
+        excluded_join_id=None,
+        destinations=None,
+    ):
+        if destinations is None:
+            destinations = []
+            if self.root_template_combo.currentData():
+                try:
+                    destinations = [build_join_tree(self.project_path, self._draft())]
+                    for node in destinations:
+                        destinations.extend(node["children"])
+                except EDITOR_ERRORS:
+                    pass
+        destination_by_path = {
+            str(node["full_path"]): node
+            for node in destinations
+        }
+        has_marked_targets = any(
+            node["join_target"] for node in destinations
+        )
+        definitions = {
+            definition["agent_scheme_id"]: definition
+            for definition in self.definitions
+        }
         occupied = {}
         for agent_index, agent in enumerate(self.agents, start=1):
             label = agent["agent_reg_id"].strip() or f"Агент #{agent_index}"
+            definition = definitions.get(agent["agent_scheme_id"])
+            roots = {}
+            if definition is not None:
+                try:
+                    roots = {
+                        root["join_id"]: root
+                        for root in build_agent_tree(self.project_path, definition)
+                    }
+                except EDITOR_ERRORS:
+                    pass
             for join in agent["joins"]:
                 if (
                     agent is excluded_agent
                     and join["agent_item_join_id"] == excluded_join_id
                 ):
                     continue
-                path = join["join_item_full_path"]
+                path = str(join["join_item_full_path"])
+                root = roots.get(join["agent_item_join_id"])
+                destination = destination_by_path.get(path)
+                valid = bool(
+                    root is not None
+                    and not root["missing"]
+                    and root["full_path"] == join["agent_item_full_path"]
+                    and destination is not None
+                    and not destination["missing"]
+                    and root["template_id"] == destination["template_id"]
+                    and (
+                        not has_marked_targets
+                        or destination["join_target"]
+                    )
+                )
                 occupied.setdefault(path, []).append(
-                    f"{label}, join_id={join['agent_item_join_id']}"
+                    (f"{label}, join_id={join['agent_item_join_id']}", valid)
                 )
         return occupied
 
@@ -335,14 +484,19 @@ class JoinSchemeEditor(QWidget):
             old_path = join["agent_item_full_path"] if join else "—"
             current_path = root["full_path"] if root else "корень не найден"
             stale = not root or bool(join and old_path != current_path)
-            self.bindings_table.setItem(row, 0, QTableWidgetItem(join_id))
-            item = QTableWidgetItem(current_path if not join or old_path == current_path else f"{old_path} → {current_path}")
+            join_id_item = QTableWidgetItem(join_id)
+            self.bindings_table.setItem(row, 0, join_id_item)
+            root_item = QTableWidgetItem(
+                current_path
+                if not join or old_path == current_path
+                else f"{old_path} → {current_path}"
+            )
             if stale:
-                item.setForeground(MISSING_REFERENCE_BRUSH)
-            self.bindings_table.setItem(row, 1, item)
+                root_item.setForeground(MISSING_REFERENCE_BRUSH)
+            self.bindings_table.setItem(row, 1, root_item)
             combo = QComboBox()
             combo.addItem("— Без привязки / удалить —", None)
-            occupied = self._occupancy(agent, join_id)
+            occupied = self._occupancy(agent, join_id, destinations)
             if root and not root["missing"]:
                 for node in destinations:
                     if (
@@ -351,7 +505,10 @@ class JoinSchemeEditor(QWidget):
                         and (not has_marked_targets or node["join_target"])
                     ):
                         destination_path = str(node["full_path"])
-                        users = occupied.get(destination_path, [])
+                        users = [
+                            label
+                            for label, _valid in occupied.get(destination_path, [])
+                        ]
                         text = destination_path
                         if users:
                             text += f" (занято: {', '.join(users)})"
@@ -360,13 +517,31 @@ class JoinSchemeEditor(QWidget):
                             combo.model().item(combo.count() - 1).setEnabled(False)
             path = join["join_item_full_path"] if join else None
             index = combo.findData(path)
-            if index < 0:
+            unavailable = index < 0
+            if unavailable:
                 combo.addItem(f"{path} (недоступно)", path)
                 index = combo.count() - 1
                 combo.setItemData(index, MISSING_REFERENCE_BRUSH, Qt.ItemDataRole.ForegroundRole)
             combo.setCurrentIndex(index)
-            if stale or (join and index > 0 and combo.itemText(index).endswith("(недоступно)")):
-                combo.setStyleSheet("color: #c62828")
+            conflicted = bool(path and occupied.get(path))
+            if stale or unavailable or conflicted:
+                status_brush = DANGER_BRUSH
+                status_color = DANGER_COLOR
+                status_text = "Подключение требует исправления"
+            elif join:
+                status_brush = SUCCESS_BRUSH
+                status_color = SUCCESS_COLOR
+                status_text = "Подключение корректно"
+            else:
+                status_brush = WARNING_BRUSH
+                status_color = WARNING_COLOR
+                status_text = "Подключение не назначено"
+            join_id_item.setBackground(status_brush)
+            join_id_item.setToolTip(status_text)
+            root_item.setBackground(status_brush)
+            root_item.setToolTip(status_text)
+            combo.setStyleSheet(background_style(status_color))
+            combo.setToolTip(status_text)
             # activated also fires when explicitly choosing the same target to confirm drift.
             combo.activated.connect(lambda _i, a=agent, key=join_id, r=root, c=combo: self._bind(a, key, r, c.currentData()))
             self.bindings_table.setCellWidget(row, 2, combo)
@@ -430,40 +605,83 @@ class JoinSchemeEditor(QWidget):
         targets = 0
         occupied_targets = 0
         conflicts = 0
-        occupied = self._occupancy()
+        destinations = [root]
+        for node in destinations:
+            destinations.extend(node["children"])
+        occupied = self._occupancy(destinations=destinations)
+        has_marked_targets = any(
+            node["join_target"] for node in destinations
+        )
+        selected_definition_ids = {
+            agent["agent_scheme_id"] for agent in self.agents
+        }
+        legacy_target_template_ids = {
+            root_definition["template_id"]
+            for definition in self.definitions
+            if definition["agent_scheme_id"] in selected_definition_ids
+            for root_definition in definition["roots"]
+        }
 
         def add_node(node: dict[str, object], parent: QTreeWidgetItem | None) -> None:
             nonlocal count, missing, targets, occupied_targets, conflicts
             count += 1
             path = str(node["full_path"])
             label = path.rsplit("/", 1)[-1]
-            users = occupied.get(path, [])
-            if node["join_target"]:
+            claims = occupied.get(path, [])
+            users = [claim_label for claim_label, _valid in claims]
+            legacy_target = (
+                not has_marked_targets
+                and node["template_id"] in legacy_target_template_ids
+            )
+            is_target = bool(node["join_target"] or legacy_target)
+            valid_connection = bool(
+                len(claims) == 1
+                and claims[0][1]
+                and not node["missing"]
+            )
+            connection_error = bool(
+                node["missing"]
+                or (claims and not valid_connection)
+            )
+            if is_target:
                 targets += 1
-                if len(users) == 1:
+            if valid_connection:
+                if is_target:
                     occupied_targets += 1
-                    label = f"✓ {label}"
-                elif len(users) > 1:
-                    conflicts += 1
-                    label = f"⚠ {label}"
-                elif not node["missing"]:
-                    label = f"○ {label}"
+                label = f"✓ {label}"
+            elif claims or (is_target and node["missing"]):
+                conflicts += 1
+                label = f"⚠ {label}"
+            elif is_target:
+                label = f"○ {label}"
             item = QTreeWidgetItem([label, path])
             item.setData(0, Qt.ItemDataRole.UserRole, node["full_path"])
-            if node["join_target"] and not users and not node["missing"]:
-                item.setBackground(0, FREE_JOIN_TARGET_BRUSH)
-                item.setBackground(1, FREE_JOIN_TARGET_BRUSH)
-                item.setToolTip(0, "Свободная точка подключения: назначьте агента")
+            if is_target or claims:
+                if connection_error:
+                    status_brush = DANGER_BRUSH
+                    status_text = (
+                        "Некорректное подключение: " + "; ".join(users)
+                        if users
+                        else "Точка подключения недоступна"
+                    )
+                elif valid_connection:
+                    status_brush = SUCCESS_BRUSH
+                    status_text = "Подключено: " + users[0]
+                else:
+                    status_brush = WARNING_BRUSH
+                    status_text = "Свободная точка подключения: назначьте агента"
+                item.setBackground(0, status_brush)
+                item.setBackground(1, status_brush)
+                item.setToolTip(0, status_text)
+                item.setToolTip(1, status_text)
             if node["missing"]:
                 missing += 1
                 item.setForeground(0, MISSING_REFERENCE_BRUSH)
                 item.setForeground(1, MISSING_REFERENCE_BRUSH)
                 item.setToolTip(0, "Шаблон не найден в текущем комплексе")
-            elif users:
-                item.setToolTip(0, "Занято: " + "; ".join(users))
-                if len(users) > 1:
-                    item.setForeground(0, MISSING_REFERENCE_BRUSH)
-                    item.setForeground(1, MISSING_REFERENCE_BRUSH)
+            elif connection_error:
+                item.setForeground(0, MISSING_REFERENCE_BRUSH)
+                item.setForeground(1, MISSING_REFERENCE_BRUSH)
             if parent is None:
                 self.tree.addTopLevelItem(item)
             else:

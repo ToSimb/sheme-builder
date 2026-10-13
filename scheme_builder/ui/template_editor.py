@@ -34,6 +34,11 @@ from scheme_builder.template import (
 )
 from scheme_builder.ui.metric_list import apply_metric_group_stripes
 from scheme_builder.ui.reference_status import MISSING_REFERENCE_BRUSH
+from scheme_builder.ui.status_colors import (
+    DANGER_BRUSH,
+    SUCCESS_BRUSH,
+    WARNING_BRUSH,
+)
 from scheme_builder.ui.unsaved_changes import UnsavedChanges
 from scheme_builder.ui.usage_status import apply_usage_marks
 from scheme_builder.agent_scheme import load_agent_schemes
@@ -275,8 +280,16 @@ class TemplateEditor(QWidget):
             for root in agent["roots"]
         )
         join_scheme = load_join_scheme(self.project_path)
+        root_template_id = None
         if join_scheme is not None:
-            used_ids.add(join_scheme["root_template_id"])
+            root_template_id = str(join_scheme["root_template_id"])
+            used_ids.add(root_template_id)
+        join_target_ids = {
+            str(include["template_id"])
+            for template in self.templates.values()
+            for include in template.get("includes", [])
+            if include.get("join_target", False)
+        }
         signal_blocker = QSignalBlocker(self.template_list)
         self.template_list.clear()
         template_ids = list(self.templates)
@@ -286,11 +299,16 @@ class TemplateEditor(QWidget):
         selected_item = None
         for template_id in template_ids:
             template = self.templates[template_id]
-            item = QListWidgetItem(f"{template_id} ({template['name']})")
+            target_marker = "○ " if template_id in join_target_ids else ""
+            item = QListWidgetItem(
+                f"{target_marker}{template_id} ({template['name']})"
+            )
             item.setData(Qt.ItemDataRole.UserRole, template_id)
             missing_metrics, missing_templates = self._missing_references(template)
+            tooltip_parts = []
             if missing_metrics or missing_templates:
                 item.setForeground(MISSING_REFERENCE_BRUSH)
+                item.setBackground(DANGER_BRUSH)
                 missing_parts = []
                 if missing_metrics:
                     missing_parts.append("метрики: " + ", ".join(missing_metrics))
@@ -298,9 +316,16 @@ class TemplateEditor(QWidget):
                     missing_parts.append(
                         "шаблоны: " + ", ".join(missing_templates)
                     )
-                item.setToolTip("Не найдены " + "; ".join(missing_parts))
-            else:
-                item.setToolTip(template_id)
+                tooltip_parts.append("Не найдены " + "; ".join(missing_parts))
+            elif template_id == root_template_id:
+                item.setBackground(SUCCESS_BRUSH)
+            elif template_id in join_target_ids:
+                item.setBackground(WARNING_BRUSH)
+            if template_id == root_template_id:
+                tooltip_parts.append("Корневой шаблон JoinScheme")
+            if template_id in join_target_ids:
+                tooltip_parts.append("Используется как точка подключения")
+            item.setToolTip("\n".join(tooltip_parts) or template_id)
             self.template_list.addItem(item)
             if template_id == selected_template_id:
                 selected_item = item

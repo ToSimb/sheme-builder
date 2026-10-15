@@ -14,7 +14,6 @@ from scheme_builder.template import (
 )
 
 JOIN_SCHEME_FILE_NAME = "join_scheme.json"
-AUTO_ASSIGN_SEARCH_LIMIT = 100_000
 
 
 class InvalidJoinSchemeError(ValueError):
@@ -203,81 +202,55 @@ def auto_assign_join_scheme(
         messages.extend(_manual_join_messages(project_path, result))
         return result, messages
 
+    messages: list[str] = []
+    existing_counts = Counter(
+        str(agent["agent_scheme_id"])
+        for agent in result["agents"]
+        if agent["agent_scheme_id"] in definitions
+    )
+    for definition in definitions.values():
+        agent_scheme_id = str(definition["agent_scheme_id"])
+        desired_count = int(definition["agent_count"])
+        existing_count = existing_counts[agent_scheme_id]
+        if existing_count > desired_count:
+            messages.append(
+                f"AgentScheme '{agent_scheme_id}': требуется {desired_count}, "
+                f"создано {existing_count}; лишние ручные агенты сохранены."
+            )
+            continue
+        for _ in range(desired_count - existing_count):
+            result["agents"].append({
+                "agent_reg_id": "",
+                "agent_scheme_id": agent_scheme_id,
+                "joins": [],
+            })
+
     target_counts = Counter(str(node["template_id"]) for node in targets)
-    remaining_counts = target_counts.copy()
+    required_counts: Counter[str] = Counter()
     for agent in result["agents"]:
         definition = definitions.get(agent["agent_scheme_id"])
         if definition is None:
             continue
-        for root in build_agent_tree(project_path, definition):
-            remaining_counts[str(root["template_id"])] -= 1
-
-    messages: list[str] = []
-    if any(count < 0 for count in remaining_counts.values()):
-        messages.append("Созданные агенты требуют больше точек, чем есть в JoinScheme.")
-    else:
-        candidates = []
-        for definition in definitions.values():
-            roots = build_agent_tree(project_path, definition)
-            requirements = Counter(str(root["template_id"]) for root in roots)
-            if requirements and set(requirements) <= set(target_counts):
-                candidates.append((definition, requirements))
-
-        template_ids = sorted(target_counts, key=str.casefold)
-        goal = tuple(remaining_counts[template_id] for template_id in template_ids)
-        states: dict[tuple[int, ...], list[list[int]]] = {
-            tuple(0 for _ in template_ids): [[]]
-        }
-        transitions = 0
-        search_limited = False
-        for _definition, requirements in candidates:
-            requirement = tuple(
-                requirements[template_id] for template_id in template_ids
-            )
-            next_states: dict[tuple[int, ...], list[list[int]]] = {}
-            for state, partial_solutions in states.items():
-                maximum = min(
-                    (goal[index] - state[index]) // count
-                    for index, count in enumerate(requirement)
-                    if count
-                )
-                for amount in range(maximum + 1):
-                    transitions += 1
-                    if transitions > AUTO_ASSIGN_SEARCH_LIMIT:
-                        search_limited = True
-                        break
-                    updated = tuple(
-                        state[index] + count * amount
-                        for index, count in enumerate(requirement)
-                    )
-                    state_solutions = next_states.setdefault(updated, [])
-                    for partial in partial_solutions:
-                        if len(state_solutions) >= 2:
-                            break
-                        state_solutions.append(partial + [amount])
-                if search_limited:
-                    break
-            if search_limited:
-                break
-            states = next_states
-
-        solutions = [] if search_limited else states.get(goal, [])
-        if search_limited:
+        required_counts.update(
+            str(root["template_id"])
+            for root in build_agent_tree(project_path, definition)
+        )
+    for template_id in sorted(
+        set(target_counts) | set(required_counts),
+        key=str.casefold,
+    ):
+        required_count = required_counts[template_id]
+        target_count = target_counts[template_id]
+        if required_count > target_count:
             messages.append(
-                "Слишком много вариантов состава агентов; уточните AgentScheme вручную."
+                f"{template_id}: агентам требуется точек {required_count}, "
+                f"доступно {target_count}."
             )
-        elif len(solutions) == 1:
-            for (definition, _requirements), amount in zip(candidates, solutions[0]):
-                for _ in range(amount):
-                    result["agents"].append({
-                        "agent_reg_id": "",
-                        "agent_scheme_id": definition["agent_scheme_id"],
-                        "joins": [],
-                    })
-        elif not solutions:
-            messages.append("Набор AgentScheme не покрывает свободные точки подключения.")
-        else:
-            messages.append("Найдено несколько вариантов состава агентов.")
+        elif required_count < target_count:
+            messages.append(
+                f"{template_id}: доступно точек {target_count}, "
+                f"агентам требуется {required_count}."
+            )
 
     occupied = {
         join["join_item_full_path"]
@@ -373,6 +346,23 @@ def join_scheme_binding_issues(project_path: Path, scheme: dict[str, object]) ->
             issues.append(f"Шаблон не найден: {node['full_path']}.")
         pending.extend(node["children"])
     definitions = {item["agent_scheme_id"]: item for item in load_agent_schemes(project_path)}
+    agent_counts = Counter(
+        str(agent["agent_scheme_id"])
+        for agent in scheme.get("agents", [])
+    )
+    for agent_scheme_id, definition in definitions.items():
+        desired_count = int(definition["agent_count"])
+        actual_count = agent_counts[agent_scheme_id]
+        if actual_count < desired_count:
+            issues.append(
+                f"Не хватает агентов AgentScheme '{agent_scheme_id}': "
+                f"требуется {desired_count}, создано {actual_count}."
+            )
+        elif actual_count > desired_count:
+            issues.append(
+                f"Лишние агенты AgentScheme '{agent_scheme_id}': "
+                f"требуется {desired_count}, создано {actual_count}."
+            )
     used = {}
     marked_targets = {
         path for path, node in destinations.items() if node["join_target"]

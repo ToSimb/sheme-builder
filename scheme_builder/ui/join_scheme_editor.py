@@ -117,7 +117,7 @@ class JoinSchemeEditor(QWidget):
 
         agents_panel = QWidget()
         agents_layout = QVBoxLayout(agents_panel)
-        agents_layout.setContentsMargins(0, 0, 0, 0)
+        agents_layout.setContentsMargins(0, 0, 12, 0)
         agents_layout.addWidget(QLabel("Агенты и подключения"))
         agents_layout.addLayout(buttons)
         agents_layout.addWidget(self.agents_table)
@@ -234,6 +234,7 @@ class JoinSchemeEditor(QWidget):
                 "введите agent_reg_id",
                 "выберите AgentScheme",
                 "отсутствует привязка",
+                "Не хватает агентов AgentScheme",
                 "Точка подключения не занята",
             )
             errors = [

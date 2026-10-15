@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QFormLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -16,6 +17,8 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QSplitter,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -44,6 +47,9 @@ from scheme_builder.ui.usage_status import apply_usage_marks
 from scheme_builder.agent_scheme import load_agent_schemes
 
 
+TEMPLATE_HIERARCHY_LIMIT = 10_000
+
+
 class TemplateEditor(QWidget):
     def __init__(self, project_path: Path, parent: QWidget | None = None):
         super().__init__(parent)
@@ -51,10 +57,15 @@ class TemplateEditor(QWidget):
         self.metrics: dict[str, dict[str, object]] = {}
         self.templates: dict[str, dict[str, object]] = {}
         self.includes: list[dict[str, int | str]] = []
+        self.root_template_id: str | None = None
+        self._hierarchy_items_by_template_id: dict[
+            str, list[QTreeWidgetItem]
+        ] = {}
 
-        splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self.editor_splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self.editor_splitter.setObjectName("templateEditorSplitter")
 
-        list_panel = QWidget(splitter)
+        list_panel = QWidget(self.editor_splitter)
         list_panel.setMinimumWidth(CATALOG_LIST_WIDTH)
         list_layout = QVBoxLayout(list_panel)
         self.template_list = QListWidget(list_panel)
@@ -76,7 +87,7 @@ class TemplateEditor(QWidget):
         list_layout.addWidget(self.sort_button)
         list_layout.addWidget(self.delete_button)
 
-        scroll_area = QScrollArea(splitter)
+        scroll_area = QScrollArea(self.editor_splitter)
         scroll_area.setWidgetResizable(True)
         form_panel = QWidget()
         form_layout = QVBoxLayout(form_panel)
@@ -139,13 +150,37 @@ class TemplateEditor(QWidget):
         form_layout.addStretch()
         scroll_area.setWidget(form_panel)
 
-        splitter.addWidget(list_panel)
-        splitter.addWidget(scroll_area)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 3)
+        hierarchy_panel = QWidget(self.editor_splitter)
+        hierarchy_panel.setMinimumWidth(CATALOG_LIST_WIDTH)
+        hierarchy_layout = QVBoxLayout(hierarchy_panel)
+        hierarchy_layout.addWidget(QLabel("<b>Иерархия шаблонов</b>"))
+        self.hierarchy_summary_label = QLabel()
+        self.hierarchy_summary_label.setObjectName("templateHierarchySummaryLabel")
+        self.hierarchy_tree = QTreeWidget()
+        self.hierarchy_tree.setObjectName("templateHierarchyTree")
+        self.hierarchy_tree.setHeaderLabels(["Шаблон", "Количество"])
+        self.hierarchy_tree.setAlternatingRowColors(True)
+        self.hierarchy_tree.setSelectionMode(
+            QAbstractItemView.SelectionMode.MultiSelection
+        )
+        hierarchy_header = self.hierarchy_tree.header()
+        hierarchy_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hierarchy_header.setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents
+        )
+        hierarchy_layout.addWidget(self.hierarchy_summary_label)
+        hierarchy_layout.addWidget(self.hierarchy_tree, 1)
+
+        self.editor_splitter.addWidget(list_panel)
+        self.editor_splitter.addWidget(scroll_area)
+        self.editor_splitter.addWidget(hierarchy_panel)
+        self.editor_splitter.setStretchFactor(0, 1)
+        self.editor_splitter.setStretchFactor(1, 3)
+        self.editor_splitter.setStretchFactor(2, 2)
+        self.editor_splitter.setSizes([240, 520, 380])
 
         layout = QVBoxLayout(self)
-        layout.addWidget(splitter)
+        layout.addWidget(self.editor_splitter)
 
         self.unsaved = UnsavedChanges(
             self, [self.template_id_edit, self.name_edit, self.description_edit],
@@ -179,6 +214,10 @@ class TemplateEditor(QWidget):
             )
         )
         self.include_list.itemChanged.connect(self._include_target_changed)
+        self.template_id_edit.textChanged.connect(
+            lambda _text: self._reload_hierarchy()
+        )
+        self.name_edit.textChanged.connect(lambda _text: self._reload_hierarchy())
 
         self._reload_templates()
         if self.template_list.count() == 0:
@@ -226,6 +265,7 @@ class TemplateEditor(QWidget):
         self._reload_metric_choices(set())
         self._reload_include_list()
         self._reload_include_choices(None)
+        self._reload_hierarchy()
         self.template_id_edit.setFocus()
         self.unsaved.mark_clean()
 
@@ -284,6 +324,7 @@ class TemplateEditor(QWidget):
         if join_scheme is not None:
             root_template_id = str(join_scheme["root_template_id"])
             used_ids.add(root_template_id)
+        self.root_template_id = root_template_id
         join_target_ids = {
             str(include["template_id"])
             for template in self.templates.values()
@@ -337,6 +378,7 @@ class TemplateEditor(QWidget):
             self.template_list.setCurrentItem(selected_item)
         else:
             self._reload_include_choices(None)
+            self._reload_hierarchy()
 
     def _selection_changed(
         self,
@@ -357,7 +399,192 @@ class TemplateEditor(QWidget):
         self._reload_metric_choices(set(template.get("metrics", [])))
         self._reload_include_list()
         self._reload_include_choices(template_id)
+        self._reload_hierarchy()
         self.unsaved.mark_clean()
+
+    def _reload_hierarchy(self) -> None:
+        self.hierarchy_tree.clear()
+        self._hierarchy_items_by_template_id = {}
+
+        templates = {
+            template_id: dict(template)
+            for template_id, template in self.templates.items()
+        }
+        selected_template_id = self._selected_template_id()
+        draft_template_id = self.template_id_edit.text().strip()
+        if selected_template_id in templates:
+            draft = dict(templates[selected_template_id])
+            draft["name"] = self.name_edit.text().strip()
+            if self.includes:
+                draft["includes"] = [dict(include) for include in self.includes]
+            else:
+                draft.pop("includes", None)
+            templates[selected_template_id] = draft
+        elif draft_template_id and draft_template_id not in templates:
+            templates[draft_template_id] = {
+                "template_id": draft_template_id,
+                "name": self.name_edit.text().strip(),
+                "includes": [dict(include) for include in self.includes],
+            }
+
+        included_ids = {
+            str(include["template_id"])
+            for template in templates.values()
+            for include in template.get("includes", [])
+            if include["template_id"] in templates
+        }
+        top_level_ids: list[str] = []
+        if self.root_template_id:
+            top_level_ids.append(self.root_template_id)
+        top_level_ids.extend(
+            template_id
+            for template_id in sorted(templates, key=str.casefold)
+            if template_id not in included_ids
+            and template_id != self.root_template_id
+        )
+
+        node_count = 0
+        max_depth = 0
+        truncated = False
+        covered_ids: set[str] = set()
+
+        def attach_item(
+            item: QTreeWidgetItem,
+            parent: QTreeWidgetItem | None,
+        ) -> None:
+            if parent is None:
+                self.hierarchy_tree.addTopLevelItem(item)
+            else:
+                parent.addChild(item)
+
+        def add_template(
+            template_id: str,
+            parent: QTreeWidgetItem | None,
+            ancestors: frozenset[str],
+            depth: int,
+            include: dict[str, object] | None = None,
+        ) -> None:
+            nonlocal node_count, max_depth, truncated
+            if node_count >= TEMPLATE_HIERARCHY_LIMIT:
+                if not truncated:
+                    warning_item = QTreeWidgetItem([
+                        "⚠ Иерархия сокращена",
+                        "",
+                    ])
+                    warning_item.setBackground(0, DANGER_BRUSH)
+                    warning_item.setToolTip(
+                        0,
+                        f"Показаны первые {TEMPLATE_HIERARCHY_LIMIT} узлов",
+                    )
+                    attach_item(warning_item, parent)
+                    truncated = True
+                return
+
+            template = templates.get(template_id)
+            is_cycle = template_id in ancestors
+            is_missing = template is None
+            is_join_target = bool(
+                include is not None and include.get("join_target", False)
+            )
+
+            if is_cycle:
+                label = f"⚠ {template_id} (цикл)"
+            elif is_missing:
+                label = f"⚠ {template_id} (шаблон не найден)"
+            else:
+                if template_id == self.root_template_id:
+                    marker = "✓ "
+                elif is_join_target:
+                    marker = "○ "
+                else:
+                    marker = ""
+                name = str(template["name"])
+                label = f"{marker}{template_id}"
+                if name:
+                    label += f" ({name})"
+
+            count_text = "—" if include is None else f"× {include['count']}"
+            item = QTreeWidgetItem([label, count_text])
+            item.setData(0, Qt.ItemDataRole.UserRole, template_id)
+            attach_item(item, parent)
+            node_count += 1
+            max_depth = max(max_depth, depth)
+
+            if is_cycle:
+                item.setBackground(0, DANGER_BRUSH)
+                item.setBackground(1, DANGER_BRUSH)
+                item.setForeground(0, MISSING_REFERENCE_BRUSH)
+                item.setToolTip(0, "Включения шаблонов образуют цикл")
+                return
+            if is_missing:
+                item.setBackground(0, DANGER_BRUSH)
+                item.setBackground(1, DANGER_BRUSH)
+                item.setForeground(0, MISSING_REFERENCE_BRUSH)
+                item.setToolTip(0, "Шаблон не найден в текущем комплексе")
+                return
+            covered_ids.add(template_id)
+            self._hierarchy_items_by_template_id.setdefault(
+                template_id, []
+            ).append(item)
+            if template_id == self.root_template_id:
+                item.setBackground(0, SUCCESS_BRUSH)
+                item.setBackground(1, SUCCESS_BRUSH)
+                item.setToolTip(0, "Корневой шаблон комплекса")
+            elif is_join_target:
+                item.setBackground(0, WARNING_BRUSH)
+                item.setBackground(1, WARNING_BRUSH)
+                item.setToolTip(0, "Точка подключения агента")
+
+            child_ancestors = ancestors | {template_id}
+            for child_include in template.get("includes", []):
+                add_template(
+                    str(child_include["template_id"]),
+                    item,
+                    child_ancestors,
+                    depth + 1,
+                    child_include,
+                )
+
+        displayed_top_level_ids: list[str] = []
+        for template_id in top_level_ids:
+            previous_node_count = node_count
+            add_template(template_id, None, frozenset(), 0)
+            if node_count > previous_node_count:
+                displayed_top_level_ids.append(template_id)
+            if truncated:
+                break
+        top_level_ids = displayed_top_level_ids
+
+        for template_id in sorted(templates, key=str.casefold):
+            if template_id not in covered_ids:
+                previous_node_count = node_count
+                add_template(template_id, None, frozenset(), 0)
+                if node_count > previous_node_count:
+                    top_level_ids.append(template_id)
+                if truncated:
+                    break
+
+        if not top_level_ids:
+            placeholder = QTreeWidgetItem(["Шаблоны ещё не созданы", ""])
+            self.hierarchy_tree.addTopLevelItem(placeholder)
+
+        level_count = max_depth + 1 if node_count else 0
+        summary = (
+            f"Шаблонов: {len(templates)} | Верхний уровень: "
+            f"{len(top_level_ids)} | Узлов: {node_count} | Уровней: {level_count}"
+        )
+        if truncated:
+            summary += f" | Лимит: {TEMPLATE_HIERARCHY_LIMIT}"
+        self.hierarchy_summary_label.setText(summary)
+        self.hierarchy_tree.expandToDepth(3)
+        selected_items = self._hierarchy_items_by_template_id.get(
+            selected_template_id or "", []
+        )
+        if selected_items:
+            self.hierarchy_tree.setCurrentItem(selected_items[0])
+            for item in selected_items:
+                item.setSelected(True)
+            self.hierarchy_tree.scrollToItem(selected_items[0])
 
     def _reload_metric_choices(self, selected_metric_ids: set[object]) -> None:
         signal_blocker = QSignalBlocker(self.metric_list)
@@ -435,6 +662,7 @@ class TemplateEditor(QWidget):
             else:
                 include.pop("join_target", None)
             break
+        self._reload_hierarchy()
 
     def _add_include(self) -> None:
         template_id = self.include_template_combo.currentData()
@@ -447,6 +675,7 @@ class TemplateEditor(QWidget):
         self.include_count_spin.setValue(1)
         self._reload_include_list()
         self._reload_include_choices(self._selected_template_id())
+        self._reload_hierarchy()
 
     def _remove_include(self) -> None:
         current_item = self.include_list.currentItem()
@@ -460,6 +689,7 @@ class TemplateEditor(QWidget):
         ]
         self._reload_include_list()
         self._reload_include_choices(self._selected_template_id())
+        self._reload_hierarchy()
 
     def _sort_templates(self) -> None:
         if not self.unsaved.run(

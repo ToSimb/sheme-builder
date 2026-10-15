@@ -88,6 +88,12 @@ class AgentSchemeEditor(QWidget):
         self.description_edit.setMaximumHeight(90)
         fields_layout.addRow("Описание:", self.description_edit)
 
+        self.agent_count_spin = QSpinBox()
+        self.agent_count_spin.setObjectName("agentCountSpin")
+        self.agent_count_spin.setRange(1, 100_000)
+        self.agent_count_spin.setValue(1)
+        fields_layout.addRow("Количество агентов:", self.agent_count_spin)
+
         root_controls = QHBoxLayout()
         self.root_template_combo = QComboBox()
         self.root_template_combo.setObjectName("agentRootTemplateCombo")
@@ -113,11 +119,37 @@ class AgentSchemeEditor(QWidget):
         self.tree_summary_label.setObjectName("agentTreeSummaryLabel")
         self.tree = QTreeWidget()
         self.tree.setObjectName("agentTree")
-        self.tree.setHeaderLabels(["Экземпляр", "full_path", "join_id"])
+        self.tree.setHeaderLabels(["Экземпляр", "full_path"])
         self.tree.setUniformRowHeights(True)
         self.tree.setColumnWidth(0, 260)
         self.tree.setColumnWidth(1, 620)
-        self.tree.setMinimumHeight(280)
+        self.tree.setMinimumHeight(120)
+        self.join_id_view = QPlainTextEdit()
+        self.join_id_view.setObjectName("agentJoinIdView")
+        self.join_id_view.setReadOnly(True)
+        self.join_id_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.join_id_view.setMinimumHeight(80)
+
+        tree_panel = QWidget()
+        tree_layout = QVBoxLayout(tree_panel)
+        tree_layout.setContentsMargins(0, 0, 0, 0)
+        tree_layout.addWidget(self.tree_summary_label)
+        tree_layout.addWidget(self.tree, 1)
+
+        join_id_panel = QWidget()
+        join_id_layout = QVBoxLayout(join_id_panel)
+        join_id_layout.setContentsMargins(0, 0, 0, 0)
+        join_id_layout.addWidget(QLabel("join_id корней:"))
+        join_id_layout.addWidget(self.join_id_view, 1)
+
+        self.tree_join_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.tree_join_splitter.setObjectName("agentTreeJoinSplitter")
+        self.tree_join_splitter.setChildrenCollapsible(False)
+        self.tree_join_splitter.addWidget(tree_panel)
+        self.tree_join_splitter.addWidget(join_id_panel)
+        self.tree_join_splitter.setStretchFactor(0, 1)
+        self.tree_join_splitter.setStretchFactor(1, 0)
+        self.tree_join_splitter.setSizes([360, 110])
 
         self.save_button = QPushButton("Сохранить AgentScheme")
         self.save_button.setObjectName("saveAgentSchemeButton")
@@ -128,8 +160,7 @@ class AgentSchemeEditor(QWidget):
         editor_layout.addWidget(self.root_list)
         editor_layout.addWidget(self.remove_root_button)
         editor_layout.addWidget(QLabel("Вычисляемое дерево:"))
-        editor_layout.addWidget(self.tree_summary_label)
-        editor_layout.addWidget(self.tree, 1)
+        editor_layout.addWidget(self.tree_join_splitter, 1)
         editor_layout.addWidget(self.save_button)
 
         splitter.addWidget(list_panel)
@@ -141,7 +172,13 @@ class AgentSchemeEditor(QWidget):
         layout.addWidget(splitter)
 
         self.unsaved = UnsavedChanges(
-            self, [self.agent_scheme_id_edit, self.name_edit, self.description_edit],
+            self,
+            [
+                self.agent_scheme_id_edit,
+                self.name_edit,
+                self.description_edit,
+                self.agent_count_spin,
+            ],
             lambda: self.roots, self._save_agent_scheme, self._reset_draft,
         )
         self.new_button.clicked.connect(
@@ -189,6 +226,7 @@ class AgentSchemeEditor(QWidget):
         self.agent_scheme_id_edit.clear()
         self.name_edit.clear()
         self.description_edit.clear()
+        self.agent_count_spin.setValue(1)
         self.roots = []
         self._reload_root_list()
         self._reload_root_choices()
@@ -240,6 +278,7 @@ class AgentSchemeEditor(QWidget):
     def _collect_agent_scheme(self) -> dict[str, object]:
         name = self.name_edit.text().strip()
         return {
+            "agent_count": self.agent_count_spin.value(),
             "agent_scheme_id": self.agent_scheme_id_edit.text().strip(),
             "name": name,
             "description": self.description_edit.toPlainText().strip() or name,
@@ -313,6 +352,7 @@ class AgentSchemeEditor(QWidget):
         self.agent_scheme_id_edit.setEnabled(False)
         self.name_edit.setText(str(agent_scheme["name"]))
         self.description_edit.setPlainText(str(agent_scheme["description"]))
+        self.agent_count_spin.setValue(int(agent_scheme["agent_count"]))
         self.roots = [dict(root) for root in agent_scheme["roots"]]
         self._reload_root_list()
         self._reload_root_choices()
@@ -382,6 +422,7 @@ class AgentSchemeEditor(QWidget):
 
     def _reload_tree(self) -> None:
         self.tree.clear()
+        self.join_id_view.clear()
         if not self.roots:
             self.tree_summary_label.setText("Узлов: 0 | join_id: 0")
             return
@@ -407,11 +448,9 @@ class AgentSchemeEditor(QWidget):
         ) -> None:
             nonlocal node_count
             node_count += 1
-            join_id = str(node.get("join_id", ""))
             values = [
                 f"{node['template_id']}[{node['index']}]",
                 str(node["full_path"]),
-                join_id,
             ]
             item = (
                 QTreeWidgetItem(parent_item, values)
@@ -419,7 +458,7 @@ class AgentSchemeEditor(QWidget):
                 else QTreeWidgetItem(self.tree, values)
             )
             if bool(node["missing"]):
-                for column in range(3):
+                for column in range(2):
                     item.setForeground(column, MISSING_REFERENCE_BRUSH)
                 item.setToolTip(0, "Шаблон не найден в текущем комплексе")
             for child in node["children"]:
@@ -429,6 +468,10 @@ class AgentSchemeEditor(QWidget):
 
         for root in roots:
             add_node(root)
+        self.join_id_view.setPlainText("\n".join(
+            f"{root['template_id']}[{root['index']}]: {root['join_id']}"
+            for root in roots
+        ))
         self.tree.setUpdatesEnabled(True)
         self.tree_summary_label.setText(
             f"Узлов: {node_count} | join_id: {len(roots)}"

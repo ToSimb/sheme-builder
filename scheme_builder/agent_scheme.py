@@ -9,7 +9,9 @@ from scheme_builder.template import load_templates, template_for_transport
 AGENT_SCHEME_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.]+$")
 AGENT_SCHEMES_FILE_NAME = "agent_schemes.json"
 MAX_AGENT_ITEMS = 100_000
-_AGENT_SCHEME_FIELDS = {"agent_scheme_id", "name", "description", "roots"}
+_AGENT_SCHEME_FIELDS = {
+    "agent_count", "agent_scheme_id", "name", "description", "roots",
+}
 _ROOT_FIELDS = {"count", "template_id"}
 
 
@@ -45,6 +47,16 @@ def _validate_agent_scheme(agent_scheme: dict[str, object]) -> dict[str, object]
         normalized["description"] = name
     elif not isinstance(description, str):
         raise InvalidAgentSchemeError("Описание AgentScheme должно быть строкой.")
+
+    agent_count = normalized.get("agent_count", 1)
+    if (
+        type(agent_count) is not int
+        or not 1 <= agent_count <= MAX_AGENT_ITEMS
+    ):
+        raise InvalidAgentSchemeError(
+            f"Количество агентов должно быть целым числом от 1 до {MAX_AGENT_ITEMS}."
+        )
+    normalized["agent_count"] = agent_count
 
     roots = normalized.get("roots")
     if not isinstance(roots, list) or not roots:
